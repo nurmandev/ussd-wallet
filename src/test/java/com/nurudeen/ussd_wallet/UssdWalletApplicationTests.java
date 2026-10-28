@@ -1,13 +1,22 @@
 package com.nurudeen.ussd_wallet;
 
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-@SpringBootTest
+import com.nurudeen.ussd_wallet.customer.service.NigerianPhoneNumberNormalizer;
+import org.junit.jupiter.api.Test;
+
 class UssdWalletApplicationTests {
 
-	@Test
-	void contextLoads() {
-	}
+    private final NigerianPhoneNumberNormalizer normalizer = new NigerianPhoneNumberNormalizer();
 
+    @Test
+    void normalizesLocalNigerianNumber() {
+        assertEquals("+2348012345678", normalizer.normalize(" 08012345678 "));
+    }
+
+    @Test
+    void normalizesNigerianNumberWithCountryCode() {
+        assertEquals("+2348012345678", normalizer.normalize("2348012345678"));
+        assertEquals("+2348012345678", normalizer.normalize("+2348012345678"));
+    }
 }

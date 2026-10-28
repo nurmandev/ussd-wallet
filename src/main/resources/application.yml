@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: ussd-wallet
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ussd_wallet}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+
+wallet:
+  registration:
+    initial-customer-status: ${REGISTRATION_INITIAL_CUSTOMER_STATUS:PENDING}
+    wallet-number:
+      prefix: ${WALLET_NUMBER_PREFIX:MG}
+      random-digits: ${WALLET_NUMBER_RANDOM_DIGITS:12}
+      max-attempts: ${WALLET_NUMBER_MAX_ATTEMPTS:5}
+    rate-limit:
+      max-requests: ${REGISTRATION_RATE_LIMIT_MAX_REQUESTS:10}
+      window-seconds: ${REGISTRATION_RATE_LIMIT_WINDOW_SECONDS:60}
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
