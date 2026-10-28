@@ -56,8 +56,9 @@ public class LedgerAccount {
 
     public LedgerAccount(Wallet wallet) {
         this.wallet = wallet;
-        this.accountCode = "WALLET:" + wallet.getWalletNumber();
+        this.accountCode = "WALLET:" + wallet.getId();
         this.accountName = "Customer wallet liability";
         this.accountType = LedgerAccountType.LIABILITY;
+        this.currency = wallet.getCurrency();
     }
 }

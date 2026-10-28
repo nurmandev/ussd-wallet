@@ -4,11 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.nurudeen.ussd_wallet.common.exception.DuplicateCustomerException;
 import com.nurudeen.ussd_wallet.customer.service.CustomerRegistrationService;
+import com.nurudeen.ussd_wallet.security.principal.CustomerPrincipal;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,6 +25,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.http.MediaType;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -70,9 +73,11 @@ class CustomerRegistrationIntegrationTests {
                 .andExpect(jsonPath("$.data.phoneNumber").value("+2348012345678"))
                 .andExpect(jsonPath("$.data.customerStatus").value("PENDING"))
                 .andExpect(jsonPath("$.data.pinSetupRequired").value(true))
-                .andExpect(jsonPath("$.data.balance.ledgerBalance").value(0.0))
-                .andExpect(jsonPath("$.data.balance.availableBalance").value(0.0))
-                .andExpect(jsonPath("$.data.balance.reservedBalance").value(0.0));
+                .andExpect(jsonPath("$.data.wallet.walletNumber").value(org.hamcrest.Matchers.matchesPattern("10\\d{8}")))
+                .andExpect(jsonPath("$.data.wallet.currency").value("NGN"))
+                .andExpect(jsonPath("$.data.wallet.balance.ledgerBalance").value(0.0))
+                .andExpect(jsonPath("$.data.wallet.balance.availableBalance").value(0.0))
+                .andExpect(jsonPath("$.data.wallet.balance.reservedBalance").value(0.0));
 
         assertEquals(1, count("customers"));
         assertEquals(1, count("customer_security"));
@@ -218,6 +223,42 @@ class CustomerRegistrationIntegrationTests {
         register("08012345678");
         assertFalse(jdbcTemplate.queryForObject(
                 "SELECT phone_verified_at IS NOT NULL FROM customers", Boolean.class));
+    }
+
+    @Test
+    void authenticatedCustomerRetrievesOnlyTheirOwnWallet() throws Exception {
+        var firstCustomer = registrationService.register("08012345678");
+        var secondCustomer = registrationService.register("08087654321");
+
+        mockMvc.perform(get("/api/v1/wallets/me")
+                        .with(user(new CustomerPrincipal(firstCustomer.customerId())))
+                        .param("customerId", secondCustomer.customerId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.walletNumber")
+                        .value(firstCustomer.wallet().walletNumber()))
+                .andExpect(jsonPath("$.data.walletNumber")
+                        .value(org.hamcrest.Matchers.not(secondCustomer.wallet().walletNumber())));
+    }
+
+    @Test
+    void walletRetrievalReturnsNotFoundWhenAuthenticatedCustomerHasNoWallet() throws Exception {
+        mockMvc.perform(get("/api/v1/wallets/me")
+                        .with(user(new CustomerPrincipal(java.util.UUID.randomUUID()))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    void walletRetrievalRejectsAuthenticatedPrincipalWithoutCustomerIdentity() throws Exception {
+        mockMvc.perform(get("/api/v1/wallets/me").with(user("demo-user")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    void walletRetrievalRequiresAuthentication() throws Exception {
+        mockMvc.perform(get("/api/v1/wallets/me"))
+                .andExpect(status().isUnauthorized());
     }
 
     private void register(String phoneNumber) throws Exception {

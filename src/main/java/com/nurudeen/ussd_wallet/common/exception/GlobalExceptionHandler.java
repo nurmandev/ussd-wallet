@@ -1,6 +1,9 @@
 package com.nurudeen.ussd_wallet.common.exception;
 
 import com.nurudeen.ussd_wallet.common.response.ApiResponse;
+import com.nurudeen.ussd_wallet.common.exception.WalletAlreadyExistsException;
+import com.nurudeen.ussd_wallet.common.exception.WalletNotFoundException;
+import com.nurudeen.ussd_wallet.common.exception.CustomerIdentityUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -23,6 +26,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DuplicateCustomerException.class)
     public ResponseEntity<ApiResponse<Void>> handleDuplicate(DuplicateCustomerException exception) {
         return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(WalletAlreadyExistsException.class)
+    public ResponseEntity<ApiResponse<Void>> handleWalletAlreadyExists(
+            WalletAlreadyExistsException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(WalletNotFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleWalletNotFound(WalletNotFoundException exception) {
+        return response(HttpStatus.NOT_FOUND, exception.getMessage());
+    }
+
+    @ExceptionHandler(CustomerIdentityUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleCustomerIdentityUnavailable(
+            CustomerIdentityUnavailableException exception) {
+        return response(HttpStatus.FORBIDDEN, exception.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

@@ -13,8 +13,10 @@ import com.nurudeen.ussd_wallet.security.entity.CustomerSecurity;
 import com.nurudeen.ussd_wallet.security.repository.CustomerSecurityRepository;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.entity.WalletBalance;
+import com.nurudeen.ussd_wallet.wallet.dto.WalletResponse;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletBalanceRepository;
 import com.nurudeen.ussd_wallet.wallet.service.WalletCreationService;
+import com.nurudeen.ussd_wallet.config.WalletProperties;
 import java.util.Objects;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -35,6 +37,7 @@ public class CustomerRegistrationService {
     private final LedgerAccountRepository ledgerAccountRepository;
     private final WalletCreationService walletCreationService;
     private final RegistrationProperties registrationProperties;
+    private final WalletProperties walletProperties;
     private final TransactionTemplate transactionTemplate;
 
     public CustomerRegistrationService(
@@ -45,6 +48,7 @@ public class CustomerRegistrationService {
             LedgerAccountRepository ledgerAccountRepository,
             WalletCreationService walletCreationService,
             RegistrationProperties registrationProperties,
+            WalletProperties walletProperties,
             PlatformTransactionManager transactionManager) {
         this.phoneNumberNormalizer = phoneNumberNormalizer;
         this.customerRepository = customerRepository;
@@ -53,21 +57,20 @@ public class CustomerRegistrationService {
         this.ledgerAccountRepository = ledgerAccountRepository;
         this.walletCreationService = walletCreationService;
         this.registrationProperties = registrationProperties;
+        this.walletProperties = walletProperties;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     public CustomerRegistrationResponse register(String inputPhoneNumber) {
         String normalizedPhoneNumber = phoneNumberNormalizer.normalize(inputPhoneNumber);
-        int maxAttempts = registrationProperties.walletNumber().maxAttempts();
+        int maxAttempts = walletProperties.number().maxRetries();
 
         for (int attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 return Objects.requireNonNull(transactionTemplate.execute(
                         status -> registerInTransaction(normalizedPhoneNumber)));
             } catch (WalletNumberCollisionException exception) {
-                if (attempt + 1 == maxAttempts) {
-                    throw new ResourceCreationException(exception);
-                }
+                throw new ResourceCreationException(exception);
             } catch (DataIntegrityViolationException exception) {
                 String constraintName = findConstraintName(exception);
                 if (PHONE_UNIQUE_CONSTRAINT.equalsIgnoreCase(constraintName)) {
@@ -100,13 +103,7 @@ public class CustomerRegistrationService {
                 customer.getId(),
                 customer.getPhoneNumber(),
                 customer.getStatus(),
-                wallet.getWalletNumber(),
-                wallet.getStatus(),
-                wallet.getCurrency(),
-                new CustomerRegistrationResponse.Balance(
-                        balance.getLedgerBalance(),
-                        balance.getAvailableBalance(),
-                        balance.getReservedBalance()),
+                WalletResponse.from(wallet, balance),
                 true,
                 customer.getCreatedAt());
     }

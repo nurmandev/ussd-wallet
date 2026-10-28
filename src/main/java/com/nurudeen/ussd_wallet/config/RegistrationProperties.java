@@ -13,15 +13,11 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "wallet.registration")
 public record RegistrationProperties(
         CustomerStatus initialCustomerStatus,
-        @Valid WalletNumber walletNumber,
         @Valid RateLimit rateLimit) {
 
     public RegistrationProperties {
         if (initialCustomerStatus == null) {
             initialCustomerStatus = CustomerStatus.PENDING;
-        }
-        if (walletNumber == null) {
-            walletNumber = new WalletNumber("MG", 12, 5);
         }
         if (rateLimit == null) {
             rateLimit = new RateLimit(10, 60);
@@ -31,12 +27,6 @@ public record RegistrationProperties(
             throw new IllegalArgumentException(
                     "Initial customer status must be PENDING or explicitly configured ACTIVE");
         }
-    }
-
-    public record WalletNumber(
-            @NotBlank @Pattern(regexp = "[A-Za-z0-9]{1,6}") String prefix,
-            @Min(8) @Max(18) int randomDigits,
-            @Min(1) @Max(20) int maxAttempts) {
     }
 
     public record RateLimit(

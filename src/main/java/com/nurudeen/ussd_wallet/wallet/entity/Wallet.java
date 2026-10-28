@@ -11,6 +11,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
@@ -33,7 +34,7 @@ public class Wallet {
     private String walletNumber;
 
     @Column(nullable = false, length = 3, columnDefinition = "char(3)")
-    private String currency = "NGN";
+    private String currency;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
@@ -47,12 +48,16 @@ public class Wallet {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @OneToOne(mappedBy = "wallet")
+    private WalletBalance balance;
+
     protected Wallet() {
     }
 
-    public Wallet(Customer customer, String walletNumber) {
+    public Wallet(Customer customer, String walletNumber, String currency) {
         this.customer = customer;
         this.walletNumber = walletNumber;
+        this.currency = currency;
     }
 
     public UUID getId() {
@@ -69,5 +74,9 @@ public class Wallet {
 
     public WalletStatus getStatus() {
         return status;
+    }
+
+    public WalletBalance getBalance() {
+        return balance;
     }
 }

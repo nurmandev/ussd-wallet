@@ -7,51 +7,64 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.nurudeen.ussd_wallet.config.RegistrationProperties;
+import com.nurudeen.ussd_wallet.config.WalletProperties;
 import com.nurudeen.ussd_wallet.customer.entity.Customer;
 import com.nurudeen.ussd_wallet.customer.enums.CustomerStatus;
+import com.nurudeen.ussd_wallet.common.exception.WalletAlreadyExistsException;
+import com.nurudeen.ussd_wallet.common.exception.WalletNumberCollisionException;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class WalletCreationServiceTests {
 
     @Test
     void generatedWalletNumberUsesConfiguredPrefixAndRandomDigits() {
-        RegistrationProperties properties = new RegistrationProperties(
-                CustomerStatus.PENDING,
-                new RegistrationProperties.WalletNumber("MG", 12, 3),
-                new RegistrationProperties.RateLimit(10, 60));
-        WalletNumberGenerationService generator = new WalletNumberGenerationService(properties);
+        WalletProperties properties = new WalletProperties(
+                new WalletProperties.Number("10", 10, 3),
+                "NGN");
+        WalletNumberGeneratorService generator = new WalletNumberGeneratorService(properties);
 
         String walletNumber = generator.generate();
 
-        assertEquals(14, walletNumber.length());
-        assertEquals("MG", walletNumber.substring(0, 2));
-        org.junit.jupiter.api.Assertions.assertTrue(walletNumber.substring(2).matches("\\d{12}"));
+        assertEquals(10, walletNumber.length());
+        org.junit.jupiter.api.Assertions.assertTrue(walletNumber.matches("10\\d{8}"));
     }
 
     @Test
-    void retriesCandidateWhenWalletNumberAlreadyExists() {
-        WalletNumberGenerationService generator = mock(WalletNumberGenerationService.class);
+    void rejectsCandidateWhenWalletNumberAlreadyExists() {
+        WalletNumberGeneratorService generator = mock(WalletNumberGeneratorService.class);
         WalletRepository repository = mock(WalletRepository.class);
-        RegistrationProperties properties = new RegistrationProperties(
-                CustomerStatus.PENDING,
-                new RegistrationProperties.WalletNumber("MG", 12, 3),
-                new RegistrationProperties.RateLimit(10, 60));
+        WalletProperties properties = new WalletProperties(
+                new WalletProperties.Number("10", 10, 3),
+                "NGN");
         WalletCreationService service = new WalletCreationService(generator, repository, properties);
         Customer customer = new Customer("+2348012345678", CustomerStatus.PENDING);
-        Wallet storedWallet = mock(Wallet.class);
 
-        when(generator.generate())
-                .thenReturn("MG123456789012")
-                .thenReturn("MG987654321098");
-        when(repository.existsByWalletNumber("MG123456789012")).thenReturn(true);
-        when(repository.existsByWalletNumber("MG987654321098")).thenReturn(false);
-        when(repository.saveAndFlush(org.mockito.ArgumentMatchers.any(Wallet.class)))
-                .thenReturn(storedWallet);
+        when(generator.generate()).thenReturn("1023456789");
+        when(repository.existsByWalletNumber("1023456789")).thenReturn(true);
 
-        assertEquals(storedWallet, service.createWallet(customer));
-        verify(generator, times(2)).generate();
-        verify(repository, times(2)).existsByWalletNumber(org.mockito.ArgumentMatchers.anyString());
+        assertThrows(WalletNumberCollisionException.class, () -> service.createWallet(customer));
+        verify(repository, times(1)).existsByWalletNumber("1023456789");
+        verify(repository, org.mockito.Mockito.never())
+                .saveAndFlush(org.mockito.ArgumentMatchers.any(Wallet.class));
+    }
+
+    @Test
+    void doesNotCreateSecondWalletForCustomer() {
+        WalletNumberGeneratorService generator = mock(WalletNumberGeneratorService.class);
+        WalletRepository repository = mock(WalletRepository.class);
+        WalletCreationService service = new WalletCreationService(
+                generator, repository, new WalletProperties(
+                        new WalletProperties.Number("10", 10, 3), "NGN"));
+        Customer customer = new Customer("+2348012345678", CustomerStatus.PENDING);
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                customer, "id", java.util.UUID.randomUUID());
+        when(repository.existsByCustomer_Id(customer.getId())).thenReturn(true);
+
+        assertThrows(WalletAlreadyExistsException.class, () -> service.createWallet(customer));
+        verify(generator, org.mockito.Mockito.never()).generate();
+        verify(repository, org.mockito.Mockito.never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
     }
 }

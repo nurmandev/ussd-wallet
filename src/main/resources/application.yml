@@ -17,12 +17,13 @@ spring:
     enabled: true
 
 wallet:
+  number:
+    prefix: ${WALLET_NUMBER_PREFIX:10}
+    length: ${WALLET_NUMBER_LENGTH:10}
+    max-retries: ${WALLET_NUMBER_MAX_RETRIES:5}
+  currency: ${WALLET_CURRENCY:NGN}
   registration:
     initial-customer-status: ${REGISTRATION_INITIAL_CUSTOMER_STATUS:PENDING}
-    wallet-number:
-      prefix: ${WALLET_NUMBER_PREFIX:MG}
-      random-digits: ${WALLET_NUMBER_RANDOM_DIGITS:12}
-      max-attempts: ${WALLET_NUMBER_MAX_ATTEMPTS:5}
     rate-limit:
       max-requests: ${REGISTRATION_RATE_LIMIT_MAX_REQUESTS:10}
       window-seconds: ${REGISTRATION_RATE_LIMIT_WINDOW_SECONDS:60}
