@@ -90,6 +90,11 @@ class CustomerRegistrationIntegrationTests {
                 "SELECT pin_status FROM customer_security", String.class));
         assertEquals("LIABILITY", jdbcTemplate.queryForObject(
                 "SELECT account_type FROM ledger_accounts", String.class));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM ledger_accounts WHERE wallet_id = (SELECT id FROM wallets)",
+                Integer.class));
+        assertEquals("NGN", jdbcTemplate.queryForObject(
+                "SELECT currency FROM ledger_accounts", String.class).trim());
     }
 
     @Test
@@ -194,6 +199,43 @@ class CustomerRegistrationIntegrationTests {
     }
 
     @Test
+    void failureInitializingBalanceRollsBackAllRegistrationRecords() throws Exception {
+        jdbcTemplate.execute("""
+                CREATE OR REPLACE FUNCTION reject_wallet_balance_insert()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'test-only wallet balance failure';
+                END;
+                $$
+                """);
+        jdbcTemplate.execute("""
+                CREATE TRIGGER reject_wallet_balance_insert_trigger
+                BEFORE INSERT ON wallet_balances
+                FOR EACH ROW EXECUTE FUNCTION reject_wallet_balance_insert()
+                """);
+
+        try {
+            mockMvc.perform(post("/api/v1/customers/register")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"phoneNumber":"08012345678"}
+                                    """))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.success").value(false));
+        } finally {
+            jdbcTemplate.execute(
+                    "DROP TRIGGER IF EXISTS reject_wallet_balance_insert_trigger ON wallet_balances");
+            jdbcTemplate.execute("DROP FUNCTION IF EXISTS reject_wallet_balance_insert()");
+        }
+
+        assertEquals(0, count("customers"));
+        assertEquals(0, count("customer_security"));
+        assertEquals(0, count("wallets"));
+        assertEquals(0, count("wallet_balances"));
+        assertEquals(0, count("ledger_accounts"));
+    }
+
+    @Test
     void concurrentRequestsForSameNumberCreateExactlyOneCustomer() throws Exception {
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
@@ -213,6 +255,11 @@ class CustomerRegistrationIntegrationTests {
             assertEquals(1, count("wallets"));
             assertEquals(1, count("wallet_balances"));
             assertEquals(1, count("ledger_accounts"));
+            assertEquals(1, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM ledger_accounts WHERE wallet_id = (SELECT id FROM wallets)",
+                    Integer.class));
+            assertEquals("NGN", jdbcTemplate.queryForObject(
+                    "SELECT currency FROM ledger_accounts", String.class).trim());
         } finally {
             executor.shutdownNow();
         }

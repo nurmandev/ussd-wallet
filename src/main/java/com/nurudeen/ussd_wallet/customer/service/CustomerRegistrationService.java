@@ -7,16 +7,15 @@ import com.nurudeen.ussd_wallet.config.RegistrationProperties;
 import com.nurudeen.ussd_wallet.customer.dto.CustomerRegistrationResponse;
 import com.nurudeen.ussd_wallet.customer.entity.Customer;
 import com.nurudeen.ussd_wallet.customer.repository.CustomerRepository;
-import com.nurudeen.ussd_wallet.ledger.entity.LedgerAccount;
-import com.nurudeen.ussd_wallet.ledger.repository.LedgerAccountRepository;
+import com.nurudeen.ussd_wallet.ledger.service.LedgerAccountCreationService;
 import com.nurudeen.ussd_wallet.security.entity.CustomerSecurity;
 import com.nurudeen.ussd_wallet.security.repository.CustomerSecurityRepository;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.entity.WalletBalance;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletResponse;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletBalanceRepository;
-import com.nurudeen.ussd_wallet.wallet.service.WalletCreationService;
 import com.nurudeen.ussd_wallet.config.WalletProperties;
+import com.nurudeen.ussd_wallet.wallet.service.WalletCreationService;
 import java.util.Objects;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -34,7 +33,7 @@ public class CustomerRegistrationService {
     private final CustomerRepository customerRepository;
     private final CustomerSecurityRepository customerSecurityRepository;
     private final WalletBalanceRepository walletBalanceRepository;
-    private final LedgerAccountRepository ledgerAccountRepository;
+    private final LedgerAccountCreationService ledgerAccountCreationService;
     private final WalletCreationService walletCreationService;
     private final RegistrationProperties registrationProperties;
     private final WalletProperties walletProperties;
@@ -45,7 +44,7 @@ public class CustomerRegistrationService {
             CustomerRepository customerRepository,
             CustomerSecurityRepository customerSecurityRepository,
             WalletBalanceRepository walletBalanceRepository,
-            LedgerAccountRepository ledgerAccountRepository,
+            LedgerAccountCreationService ledgerAccountCreationService,
             WalletCreationService walletCreationService,
             RegistrationProperties registrationProperties,
             WalletProperties walletProperties,
@@ -54,7 +53,7 @@ public class CustomerRegistrationService {
         this.customerRepository = customerRepository;
         this.customerSecurityRepository = customerSecurityRepository;
         this.walletBalanceRepository = walletBalanceRepository;
-        this.ledgerAccountRepository = ledgerAccountRepository;
+        this.ledgerAccountCreationService = ledgerAccountCreationService;
         this.walletCreationService = walletCreationService;
         this.registrationProperties = registrationProperties;
         this.walletProperties = walletProperties;
@@ -70,7 +69,9 @@ public class CustomerRegistrationService {
                 return Objects.requireNonNull(transactionTemplate.execute(
                         status -> registerInTransaction(normalizedPhoneNumber)));
             } catch (WalletNumberCollisionException exception) {
-                throw new ResourceCreationException(exception);
+                if (attempt + 1 == maxAttempts) {
+                    throw new ResourceCreationException(exception);
+                }
             } catch (DataIntegrityViolationException exception) {
                 String constraintName = findConstraintName(exception);
                 if (PHONE_UNIQUE_CONSTRAINT.equalsIgnoreCase(constraintName)) {
@@ -97,7 +98,7 @@ public class CustomerRegistrationService {
 
         Wallet wallet = walletCreationService.createWallet(customer);
         WalletBalance balance = walletBalanceRepository.saveAndFlush(new WalletBalance(wallet));
-        ledgerAccountRepository.saveAndFlush(new LedgerAccount(wallet));
+        ledgerAccountCreationService.createCustomerWalletLiabilityAccount(wallet);
 
         return new CustomerRegistrationResponse(
                 customer.getId(),

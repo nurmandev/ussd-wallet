@@ -31,6 +31,6 @@ public class CustomerRegistrationController {
             @Valid @RequestBody CustomerRegistrationRequest request) {
         CustomerRegistrationResponse response = registrationService.register(request.phoneNumber());
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Customer registered successfully", response));
+                .body(ApiResponse.success("Customer registered and wallet created successfully", response));
     }
 }

@@ -1,9 +1,6 @@
 package com.nurudeen.ussd_wallet.common.exception;
 
 import com.nurudeen.ussd_wallet.common.response.ApiResponse;
-import com.nurudeen.ussd_wallet.common.exception.WalletAlreadyExistsException;
-import com.nurudeen.ussd_wallet.common.exception.WalletNotFoundException;
-import com.nurudeen.ussd_wallet.common.exception.CustomerIdentityUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;

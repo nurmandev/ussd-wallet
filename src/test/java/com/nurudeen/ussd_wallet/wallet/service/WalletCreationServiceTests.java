@@ -1,12 +1,13 @@
 package com.nurudeen.ussd_wallet.wallet.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.nurudeen.ussd_wallet.config.RegistrationProperties;
 import com.nurudeen.ussd_wallet.config.WalletProperties;
 import com.nurudeen.ussd_wallet.customer.entity.Customer;
 import com.nurudeen.ussd_wallet.customer.enums.CustomerStatus;
@@ -14,8 +15,8 @@ import com.nurudeen.ussd_wallet.common.exception.WalletAlreadyExistsException;
 import com.nurudeen.ussd_wallet.common.exception.WalletNumberCollisionException;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
+import java.security.SecureRandom;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class WalletCreationServiceTests {
 
@@ -29,7 +30,26 @@ class WalletCreationServiceTests {
         String walletNumber = generator.generate();
 
         assertEquals(10, walletNumber.length());
-        org.junit.jupiter.api.Assertions.assertTrue(walletNumber.matches("10\\d{8}"));
+        assertTrue(walletNumber.matches("10\\d{8}"));
+    }
+
+    @Test
+    void generatorUsesSecureRandomDigitsInConfiguredLength() {
+        SecureRandom deterministicSecureRandom = new SecureRandom() {
+            private int next;
+
+            @Override
+            public int nextInt(int bound) {
+                return (next++) % bound;
+            }
+        };
+        WalletProperties properties = new WalletProperties(
+                new WalletProperties.Number("10", 10, 3),
+                "NGN");
+        WalletNumberGeneratorService generator =
+                new WalletNumberGeneratorService(properties, deterministicSecureRandom);
+
+        assertEquals("1001234567", generator.generate());
     }
 
     @Test
@@ -46,7 +66,8 @@ class WalletCreationServiceTests {
         when(repository.existsByWalletNumber("1023456789")).thenReturn(true);
 
         assertThrows(WalletNumberCollisionException.class, () -> service.createWallet(customer));
-        verify(repository, times(1)).existsByWalletNumber("1023456789");
+        verify(generator, times(3)).generate();
+        verify(repository, times(3)).existsByWalletNumber("1023456789");
         verify(repository, org.mockito.Mockito.never())
                 .saveAndFlush(org.mockito.ArgumentMatchers.any(Wallet.class));
     }
