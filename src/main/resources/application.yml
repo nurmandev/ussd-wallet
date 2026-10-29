@@ -30,6 +30,18 @@ wallet:
       max-requests: ${REGISTRATION_RATE_LIMIT_MAX_REQUESTS:10}
       window-seconds: ${REGISTRATION_RATE_LIMIT_WINDOW_SECONDS:60}
 
+pin:
+  security:
+    max-failed-attempts: ${PIN_MAX_FAILED_ATTEMPTS:5}
+    lockout-minutes: ${PIN_LOCKOUT_MINUTES:15}
+    argon2-salt-length: ${PIN_ARGON2_SALT_LENGTH:16}
+    argon2-hash-length: ${PIN_ARGON2_HASH_LENGTH:32}
+    argon2-parallelism: ${PIN_ARGON2_PARALLELISM:1}
+    argon2-memory-kib: ${PIN_ARGON2_MEMORY_KIB:65536}
+    argon2-iterations: ${PIN_ARGON2_ITERATIONS:3}
+    recovery-token-minutes: ${PIN_RECOVERY_TOKEN_MINUTES:5}
+    pepper: ${PIN_PEPPER:}
+
 server:
   error:
     include-message: never

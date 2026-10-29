@@ -26,9 +26,19 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.http.MediaType;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
+import com.nurudeen.ussd_wallet.common.exception.OtpRecoveryUnavailableException;
+import com.nurudeen.ussd_wallet.security.service.OtpVerificationService;
+import com.nurudeen.ussd_wallet.security.service.PinVerificationService;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -44,6 +54,180 @@ class CustomerRegistrationIntegrationTests {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("pin.security.pepper", () -> "integration-test-pin-pepper-that-is-over-32-chars");
+    }
+
+    @Test
+    void transferRequiresValidPinAndRecordsAtomicDoubleEntryTransfer() throws Exception {
+        var sender = registrationService.register("08012345678");
+        var recipient = registrationService.register("08087654321");
+        jdbcTemplate.update("UPDATE customers SET status = 'ACTIVE' WHERE id IN (?, ?)",
+                sender.customerId(), recipient.customerId());
+        jdbcTemplate.update(
+                "UPDATE wallet_balances SET ledger_balance = 100.00, available_balance = 100.00 "
+                        + "WHERE wallet_id = ?",
+                sender.wallet().walletId());
+        var principal = new CustomerPrincipal(sender.customerId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        String idempotencyKey = java.util.UUID.randomUUID().toString();
+        String transferRequest = """
+                {"recipientWalletNumber":"%s","amount":25.00,"pin":"4829","idempotencyKey":"%s"}
+                """.formatted(recipient.wallet().walletNumber(), idempotencyKey);
+        var transferResult = mockMvc.perform(post("/api/v1/wallet/transfers")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(transferRequest))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.reference").value(org.hamcrest.Matchers.startsWith("TXN-")))
+                .andExpect(jsonPath("$.data.pin").doesNotExist())
+                .andReturn();
+
+        assertEquals(new java.math.BigDecimal("75.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                sender.wallet().walletId()));
+        assertEquals(new java.math.BigDecimal("25.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                recipient.wallet().walletId()));
+        assertEquals(1, count("wallet_transfers"));
+        assertEquals(2, count("wallet_transfer_entries"));
+        assertEquals(new java.math.BigDecimal("25.00"), jdbcTemplate.queryForObject(
+                "SELECT SUM(amount) FROM wallet_transfer_entries WHERE entry_type = 'DEBIT'",
+                java.math.BigDecimal.class));
+        assertEquals(new java.math.BigDecimal("25.00"), jdbcTemplate.queryForObject(
+                "SELECT SUM(amount) FROM wallet_transfer_entries WHERE entry_type = 'CREDIT'",
+                java.math.BigDecimal.class));
+
+        String reference = com.jayway.jsonpath.JsonPath.read(
+                transferResult.getResponse().getContentAsString(), "$.data.reference");
+        mockMvc.perform(post("/api/v1/wallet/transfers")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(transferRequest))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reference").value(reference));
+        assertEquals(1, count("wallet_transfers"));
+        assertEquals(2, count("wallet_transfer_entries"));
+    }
+
+    @Test
+    void failedOrLockedPinNeverMovesFunds() throws Exception {
+        var sender = registrationService.register("08012345678");
+        var recipient = registrationService.register("08087654321");
+        jdbcTemplate.update("UPDATE customers SET status = 'ACTIVE' WHERE id IN (?, ?)",
+                sender.customerId(), recipient.customerId());
+        jdbcTemplate.update(
+                "UPDATE wallet_balances SET ledger_balance = 100.00, available_balance = 100.00 "
+                        + "WHERE wallet_id = ?",
+                sender.wallet().walletId());
+        var principal = new CustomerPrincipal(sender.customerId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        String body = """
+                {"recipientWalletNumber":"%s","amount":25.00,"pin":"7392","idempotencyKey":"%s"}
+                """;
+        for (int attempt = 0; attempt < 4; attempt++) {
+            mockMvc.perform(post("/api/v1/wallet/transfers")
+                            .with(user(principal))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body.formatted(
+                                    recipient.wallet().walletNumber(),
+                                    java.util.UUID.randomUUID())))
+                    .andExpect(status().isUnauthorized());
+        }
+        mockMvc.perform(post("/api/v1/wallet/transfers")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body.formatted(
+                                recipient.wallet().walletNumber(),
+                                java.util.UUID.randomUUID())))
+                .andExpect(status().isLocked());
+
+        assertEquals(new java.math.BigDecimal("100.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                sender.wallet().walletId()));
+        assertEquals(0, count("wallet_transfers"));
+        assertEquals(0, count("wallet_transfer_entries"));
+    }
+
+    @Test
+    void concurrentTransfersCannotSpendTheSameBalanceTwice() throws Exception {
+        var sender = registrationService.register("08012345678");
+        var recipient = registrationService.register("08087654321");
+        jdbcTemplate.update("UPDATE customers SET status = 'ACTIVE' WHERE id IN (?, ?)",
+                sender.customerId(), recipient.customerId());
+        jdbcTemplate.update(
+                "UPDATE wallet_balances SET ledger_balance = 100.00, available_balance = 100.00 "
+                        + "WHERE wallet_id = ?",
+                sender.wallet().walletId());
+        var principal = new CustomerPrincipal(sender.customerId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Callable<Integer> attempt = () -> mockMvc.perform(post("/api/v1/wallet/transfers")
+                            .with(user(principal))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"recipientWalletNumber":"%s","amount":80.00,"pin":"4829",\
+                                    "idempotencyKey":"%s"}
+                                    """.formatted(
+                                    recipient.wallet().walletNumber(),
+                                    java.util.UUID.randomUUID())))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus();
+            var first = executor.submit(attempt);
+            var second = executor.submit(attempt);
+            int firstStatus = first.get();
+            int secondStatus = second.get();
+
+            assertEquals(1, java.util.stream.Stream.of(firstStatus, secondStatus)
+                    .filter(status -> status == 200)
+                    .count());
+            assertEquals(1, java.util.stream.Stream.of(firstStatus, secondStatus)
+                    .filter(status -> status == 409)
+                    .count());
+            assertEquals(new java.math.BigDecimal("20.00"), jdbcTemplate.queryForObject(
+                    "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                    java.math.BigDecimal.class,
+                    sender.wallet().walletId()));
+            assertEquals(new java.math.BigDecimal("80.00"), jdbcTemplate.queryForObject(
+                    "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                    java.math.BigDecimal.class,
+                    recipient.wallet().walletId()));
+            assertEquals(1, count("wallet_transfers"));
+            assertEquals(2, count("wallet_transfer_entries"));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Autowired
@@ -55,10 +239,21 @@ class CustomerRegistrationIntegrationTests {
     @Autowired
     private CustomerRegistrationService registrationService;
 
+    @Autowired
+    private PinVerificationService pinVerificationService;
+
+    @MockitoBean
+    private OtpVerificationService otpVerificationService;
+
     @BeforeEach
     void clearDatabase() {
+        doThrow(new OtpRecoveryUnavailableException())
+                .when(otpVerificationService)
+                .requestOtp(any(), any());
         jdbcTemplate.execute(
-                "TRUNCATE TABLE ledger_accounts, wallet_balances, wallets, customer_security, customers CASCADE");
+                "TRUNCATE TABLE pin_recovery_authorizations, pin_security_audit, ledger_accounts, "
+                        + "wallet_transfer_entries, wallet_transfers, wallet_balances, wallets, "
+                        + "customer_security, customers CASCADE");
     }
 
     @Test
@@ -306,6 +501,284 @@ class CustomerRegistrationIntegrationTests {
     void walletRetrievalRequiresAuthentication() throws Exception {
         mockMvc.perform(get("/api/v1/wallets/me"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void pinSetupHashesPinAndStatusNeverReturnsHash() throws Exception {
+        var registration = registrationService.register("08012345678");
+        var principal = new CustomerPrincipal(registration.customerId());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"4829","confirmPin":"4829"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        String encodedPin = jdbcTemplate.queryForObject(
+                "SELECT pin_hash FROM customer_security WHERE customer_id = ?",
+                String.class,
+                registration.customerId());
+        assertTrue(encodedPin.startsWith("$argon2id$"));
+        assertFalse(encodedPin.equals("4829"));
+
+        mockMvc.perform(get("/api/v1/wallet/pin/status").with(user(principal)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pinConfigured").value(true))
+                .andExpect(jsonPath("$.data.verificationLocked").value(false))
+                .andExpect(jsonPath("$.data.lockExpiresAt").doesNotExist());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"7392","confirmPin":"7392"}
+                                """))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void pinVerificationPersistsFailureCountAndLocksAfterFiveFailures() throws Exception {
+        var registration = registrationService.register("08012345678");
+        var principal = new CustomerPrincipal(registration.customerId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        for (int attempt = 1; attempt <= 4; attempt++) {
+            mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                            .with(user(principal))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"pin":"7392"}
+                                    """))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.message").value("Invalid transaction PIN"));
+        }
+        mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"7392"}
+                                """))
+                .andExpect(status().isLocked());
+
+        assertEquals(5, jdbcTemplate.queryForObject(
+                "SELECT failed_pin_attempts FROM customer_security WHERE customer_id = ?",
+                Integer.class,
+                registration.customerId()));
+        assertTrue(jdbcTemplate.queryForObject(
+                "SELECT locked_until > now() FROM customer_security WHERE customer_id = ?",
+                Boolean.class,
+                registration.customerId()));
+
+        mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"4829"}
+                                """))
+                .andExpect(status().isLocked());
+    }
+
+    @Test
+    void concurrentPinFailuresCannotExceedLockoutThreshold() throws Exception {
+        var registration = registrationService.register("08012345678");
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(new CustomerPrincipal(registration.customerId())))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+        try {
+            Callable<Boolean> invalidAttempt = () -> {
+                try {
+                    pinVerificationService.verify(registration.customerId(), "7392");
+                    return false;
+                } catch (com.nurudeen.ussd_wallet.common.exception.PinVerificationLockedException exception) {
+                    return true;
+                } catch (com.nurudeen.ussd_wallet.common.exception.InvalidTransactionPinException exception) {
+                    return false;
+                }
+            };
+            var attempts = java.util.stream.IntStream.range(0, 10)
+                    .mapToObj(index -> executor.submit(invalidAttempt))
+                    .toList();
+            long lockedAttempts = 0;
+            for (var attempt : attempts) {
+                if (attempt.get()) {
+                    lockedAttempts++;
+                }
+            }
+
+            assertTrue(lockedAttempts >= 5);
+            assertEquals(5, jdbcTemplate.queryForObject(
+                    "SELECT failed_pin_attempts FROM customer_security WHERE customer_id = ?",
+                    Integer.class,
+                    registration.customerId()));
+            assertTrue(jdbcTemplate.queryForObject(
+                    "SELECT pin_status = 'LOCKED' FROM customer_security WHERE customer_id = ?",
+                    Boolean.class,
+                    registration.customerId()));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void successfulVerificationResetsFailureCountAndChangeRequiresCurrentPin() throws Exception {
+        var registration = registrationService.register("08012345678");
+        var principal = new CustomerPrincipal(registration.customerId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"7392"}
+                                """))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"4829"}
+                                """))
+                .andExpect(status().isOk());
+
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT failed_pin_attempts FROM customer_security WHERE customer_id = ?",
+                Integer.class,
+                registration.customerId()));
+
+        mockMvc.perform(post("/api/v1/wallet/pin/change")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"currentPin":"4829","newPin":"7392","confirmPin":"7392"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"pin":"7392"}
+                                """))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void pinEndpointsRequireAuthenticatedCustomerIdentityAndRecoveryFailsClosedWithoutOtp() throws Exception {
+        mockMvc.perform(get("/api/v1/wallet/pin/status"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/v1/wallet/pin/status").with(user("ordinary-user")))
+                .andExpect(status().isForbidden());
+
+        var registration = registrationService.register("08012345678");
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/request")
+                        .with(user(new CustomerPrincipal(registration.customerId())))
+                        .with(csrf()))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message")
+                        .value("PIN recovery is unavailable because identity verification is not configured"));
+    }
+
+    @Test
+    void recoveryAuthorizationIsOneTimeAndBoundToAuthenticatedCustomer() throws Exception {
+        var registration = registrationService.register("08012345678");
+        var otherRegistration = registrationService.register("08087654321");
+        var principal = new CustomerPrincipal(registration.customerId());
+        doNothing().when(otpVerificationService).requestOtp(
+                registration.customerId(), OtpVerificationService.PIN_RECOVERY_PURPOSE);
+        when(otpVerificationService.verifyAndConsume(
+                eq(registration.customerId()),
+                eq(OtpVerificationService.PIN_RECOVERY_PURPOSE),
+                eq("123456"))).thenReturn(true, false);
+
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/request")
+                        .with(user(principal))
+                        .with(csrf()))
+                .andExpect(status().isAccepted());
+        var otpResponse = mockMvc.perform(post("/api/v1/wallet/pin/reset/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"otp":"123456"}
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = com.jayway.jsonpath.JsonPath.read(
+                otpResponse.getResponse().getContentAsString(), "$.data.recoveryToken");
+
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/verify")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"otp":"123456"}
+                                """))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/complete")
+                        .with(user(new CustomerPrincipal(otherRegistration.customerId())))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"recoveryToken":"%s","newPin":"7392","confirmPin":"7392"}
+                                """.formatted(token)))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/complete")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"recoveryToken":"%s","newPin":"7392","confirmPin":"7392"}
+                                """.formatted(token)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/wallet/pin/reset/complete")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"recoveryToken":"%s","newPin":"6248","confirmPin":"6248"}
+                                """.formatted(token)))
+                .andExpect(status().isBadRequest());
     }
 
     private void register(String phoneNumber) throws Exception {

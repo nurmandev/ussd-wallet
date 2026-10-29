@@ -60,4 +60,24 @@ public class WalletBalance {
     public BigDecimal getReservedBalance() {
         return reservedBalance;
     }
+
+    public UUID getWalletId() {
+        return walletId;
+    }
+
+    public void debit(BigDecimal amount) {
+        if (amount.signum() <= 0 || availableBalance.compareTo(amount) < 0) {
+            throw new IllegalStateException("Wallet debit violates the available-balance invariant");
+        }
+        ledgerBalance = ledgerBalance.subtract(amount);
+        availableBalance = availableBalance.subtract(amount);
+    }
+
+    public void credit(BigDecimal amount) {
+        if (amount.signum() <= 0) {
+            throw new IllegalArgumentException("Wallet credit must be greater than zero");
+        }
+        ledgerBalance = ledgerBalance.add(amount);
+        availableBalance = availableBalance.add(amount);
+    }
 }

@@ -4,5 +4,9 @@ public enum CustomerStatus {
     PENDING,
     ACTIVE,
     SUSPENDED,
-    CLOSED
+    CLOSED;
+
+    public boolean isFinanciallyActive() {
+        return this == ACTIVE;
+    }
 }

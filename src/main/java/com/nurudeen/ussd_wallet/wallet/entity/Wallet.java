@@ -1,6 +1,7 @@
 package com.nurudeen.ussd_wallet.wallet.entity;
 
 import com.nurudeen.ussd_wallet.customer.entity.Customer;
+import com.nurudeen.ussd_wallet.customer.enums.CustomerStatus;
 import com.nurudeen.ussd_wallet.wallet.enums.WalletStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -76,6 +77,18 @@ public class Wallet {
 
     public WalletStatus getStatus() {
         return status;
+    }
+
+    public UUID getCustomerId() {
+        return customer.getId();
+    }
+
+    public Customer getCustomerEntity() {
+        return customer;
+    }
+
+    public CustomerStatus getCustomerStatus() {
+        return customer.getStatus();
     }
 
     public WalletBalance getBalance() {

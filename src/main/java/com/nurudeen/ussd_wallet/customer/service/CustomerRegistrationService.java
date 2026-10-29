@@ -94,9 +94,9 @@ public class CustomerRegistrationService {
 
         Customer customer = customerRepository.saveAndFlush(
                 new Customer(phoneNumber, registrationProperties.initialCustomerStatus()));
-        customerSecurityRepository.saveAndFlush(new CustomerSecurity(customer));
 
         Wallet wallet = walletCreationService.createWallet(customer);
+        customerSecurityRepository.saveAndFlush(new CustomerSecurity(customer, wallet));
         WalletBalance balance = walletBalanceRepository.saveAndFlush(new WalletBalance(wallet));
         ledgerAccountCreationService.createCustomerWalletLiabilityAccount(wallet);
 

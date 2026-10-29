@@ -36,10 +36,64 @@ public class GlobalExceptionHandler {
         return response(HttpStatus.NOT_FOUND, exception.getMessage());
     }
 
+    @ExceptionHandler(InsufficientWalletFundsException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInsufficientFunds(
+            InsufficientWalletFundsException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(WalletTransferConflictException.class)
+    public ResponseEntity<ApiResponse<Void>> handleWalletTransferConflict(
+            WalletTransferConflictException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
     @ExceptionHandler(CustomerIdentityUnavailableException.class)
     public ResponseEntity<ApiResponse<Void>> handleCustomerIdentityUnavailable(
             CustomerIdentityUnavailableException exception) {
         return response(HttpStatus.FORBIDDEN, exception.getMessage());
+    }
+
+    @ExceptionHandler(PinAlreadyConfiguredException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePinAlreadyConfigured(
+            PinAlreadyConfiguredException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(PinNotConfiguredException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePinNotConfigured(PinNotConfiguredException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(InvalidTransactionPinException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidPin(InvalidTransactionPinException exception) {
+        return response(HttpStatus.UNAUTHORIZED, exception.getMessage());
+    }
+
+    @ExceptionHandler(PinVerificationLockedException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePinLocked(PinVerificationLockedException exception) {
+        return response(HttpStatus.LOCKED, exception.getMessage());
+    }
+
+    @ExceptionHandler({
+        WeakPinException.class,
+        PinConfirmationMismatchException.class,
+        PinReuseException.class
+    })
+    public ResponseEntity<ApiResponse<Void>> handlePinRequestRejection(RuntimeException exception) {
+        return response(HttpStatus.BAD_REQUEST, exception.getMessage());
+    }
+
+    @ExceptionHandler(InvalidPinRecoveryAuthorizationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidPinRecovery(
+            InvalidPinRecoveryAuthorizationException exception) {
+        return response(HttpStatus.BAD_REQUEST, exception.getMessage());
+    }
+
+    @ExceptionHandler(OtpRecoveryUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleOtpRecoveryUnavailable(
+            OtpRecoveryUnavailableException exception) {
+        return response(HttpStatus.SERVICE_UNAVAILABLE, exception.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

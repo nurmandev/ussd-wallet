@@ -1,6 +1,7 @@
 package com.nurudeen.ussd_wallet.config;
 
 import com.nurudeen.ussd_wallet.security.filter.RegistrationRateLimitFilter;
+import java.time.Clock;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,6 +13,11 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 @Configuration
 public class SecurityConfig {
+
+    @Bean
+    Clock systemUtcClock() {
+        return Clock.systemUTC();
+    }
 
     @Bean
     SecurityFilterChain securityFilterChain(
