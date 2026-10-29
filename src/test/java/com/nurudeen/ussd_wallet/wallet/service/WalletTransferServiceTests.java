@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.nurudeen.ussd_wallet.common.exception.InsufficientWalletFundsException;
 import com.nurudeen.ussd_wallet.common.exception.InvalidTransactionPinException;
+import com.nurudeen.ussd_wallet.config.TransferProperties;
 import com.nurudeen.ussd_wallet.customer.entity.Customer;
 import com.nurudeen.ussd_wallet.customer.enums.CustomerStatus;
 import com.nurudeen.ussd_wallet.security.service.PinVerificationService;
@@ -63,7 +64,9 @@ class WalletTransferServiceTests {
                 transferRepository,
                 entryRepository,
                 pinVerificationService,
-                entityManager);
+                entityManager,
+                new TransferProperties(
+                        new BigDecimal("0.01"), new BigDecimal("1000000.00")));
         when(walletRepository.findWalletForTransfer(customerId)).thenReturn(Optional.of(sender));
         when(walletRepository.findByWalletNumber(recipient.getWalletNumber()))
                 .thenReturn(Optional.of(recipient));

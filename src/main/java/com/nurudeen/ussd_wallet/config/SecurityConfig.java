@@ -24,11 +24,16 @@ public class SecurityConfig {
             HttpSecurity http,
             RegistrationRateLimitFilter registrationRateLimitFilter) throws Exception {
         return http
-                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/customers/register"))
+                .csrf(csrf -> csrf.ignoringRequestMatchers(
+                        "/api/v1/customers/register",
+                        "/api/v1/ussd",
+                        "/api/v1/ussd/simulator/**"))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
                                 "/api/v1/customers/register",
+                                "/api/v1/ussd",
+                                "/api/v1/ussd/simulator/**",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
                                 "/v3/api-docs/**")

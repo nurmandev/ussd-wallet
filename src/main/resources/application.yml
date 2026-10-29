@@ -24,6 +24,9 @@ wallet:
     length: ${WALLET_NUMBER_LENGTH:10}
     max-retries: ${WALLET_NUMBER_MAX_RETRIES:5}
   currency: ${WALLET_CURRENCY:NGN}
+  transfer:
+    minimum-amount: ${TRANSFER_MINIMUM_AMOUNT:0.01}
+    maximum-amount: ${TRANSFER_MAXIMUM_AMOUNT:1000000.00}
   registration:
     initial-customer-status: ${REGISTRATION_INITIAL_CUSTOMER_STATUS:PENDING}
     rate-limit:
@@ -41,6 +44,15 @@ pin:
     argon2-iterations: ${PIN_ARGON2_ITERATIONS:3}
     recovery-token-minutes: ${PIN_RECOVERY_TOKEN_MINUTES:5}
     pepper: ${PIN_PEPPER:}
+
+ussd:
+  service-code: ${USSD_SERVICE_CODE:*123#}
+  session-timeout-seconds: ${USSD_SESSION_TIMEOUT_SECONDS:120}
+  session-retention-seconds: ${USSD_SESSION_RETENTION_SECONDS:604800}
+  max-requests-per-minute: ${USSD_MAX_REQUESTS_PER_MINUTE:30}
+  gateway-secret: ${USSD_GATEWAY_SECRET:}
+  simulator-secret: ${USSD_SIMULATOR_SECRET:}
+  simulator-enabled: ${USSD_SIMULATOR_ENABLED:false}
 
 server:
   error:

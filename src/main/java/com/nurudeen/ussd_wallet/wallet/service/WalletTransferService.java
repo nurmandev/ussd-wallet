@@ -3,6 +3,7 @@ package com.nurudeen.ussd_wallet.wallet.service;
 import com.nurudeen.ussd_wallet.common.exception.InsufficientWalletFundsException;
 import com.nurudeen.ussd_wallet.common.exception.WalletNotFoundException;
 import com.nurudeen.ussd_wallet.common.exception.WalletTransferConflictException;
+import com.nurudeen.ussd_wallet.config.TransferProperties;
 import com.nurudeen.ussd_wallet.security.service.PinVerificationService;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferRequest;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferResponse;
@@ -26,6 +27,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -37,6 +39,7 @@ public class WalletTransferService {
     private final WalletTransferEntryRepository entryRepository;
     private final PinVerificationService pinVerificationService;
     private final EntityManager entityManager;
+    private final TransferProperties transferProperties;
 
     public WalletTransferService(
             WalletRepository walletRepository,
@@ -44,16 +47,18 @@ public class WalletTransferService {
             WalletTransferRepository transferRepository,
             WalletTransferEntryRepository entryRepository,
             PinVerificationService pinVerificationService,
-            EntityManager entityManager) {
+            EntityManager entityManager,
+            TransferProperties transferProperties) {
         this.walletRepository = walletRepository;
         this.balanceRepository = balanceRepository;
         this.transferRepository = transferRepository;
         this.entryRepository = entryRepository;
         this.pinVerificationService = pinVerificationService;
         this.entityManager = entityManager;
+        this.transferProperties = transferProperties;
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public WalletTransferResponse transfer(UUID customerId, WalletTransferRequest request) {
         Wallet sender = walletRepository.findWalletForTransfer(customerId)
                 .orElseThrow(WalletNotFoundException::new);
@@ -62,6 +67,10 @@ public class WalletTransferService {
         validateWallets(sender, recipient);
 
         BigDecimal amount = request.amount().setScale(2, RoundingMode.UNNECESSARY);
+        if (amount.compareTo(transferProperties.minimumAmount()) < 0
+                || amount.compareTo(transferProperties.maximumAmount()) > 0) {
+            throw new WalletTransferConflictException("Transfer amount is outside the permitted limits");
+        }
         pinVerificationService.verify(customerId, request.pin());
 
         List<UUID> walletIds = List.of(sender.getId(), recipient.getId()).stream()

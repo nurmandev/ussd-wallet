@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.nurudeen.ussd_wallet.common.exception.DuplicateCustomerException;
@@ -38,6 +39,8 @@ import static org.mockito.Mockito.when;
 import com.nurudeen.ussd_wallet.common.exception.OtpRecoveryUnavailableException;
 import com.nurudeen.ussd_wallet.security.service.OtpVerificationService;
 import com.nurudeen.ussd_wallet.security.service.PinVerificationService;
+import com.nurudeen.ussd_wallet.ussd.dto.UssdGatewayRequest;
+import com.nurudeen.ussd_wallet.ussd.service.UssdGatewayAuthenticationService;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @SpringBootTest
@@ -55,6 +58,142 @@ class CustomerRegistrationIntegrationTests {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("pin.security.pepper", () -> "integration-test-pin-pepper-that-is-over-32-chars");
+        registry.add("ussd.gateway-secret", () -> "integration-test-ussd-gateway-secret-over-32-characters");
+        registry.add("ussd.simulator-secret", () -> "integration-test-ussd-simulator-secret-over-32-characters");
+    }
+
+    @Test
+    void signedGatewayCallbacksReturnPlainTextAndReplayOriginalResponse() throws Exception {
+        UssdGatewayRequest request = new UssdGatewayRequest(
+                "MTN-SESSION-123",
+                "*123#",
+                "08012345678",
+                "",
+                "MTN",
+                "callback-1");
+
+        var first = postGateway(request)
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andExpect(content().string(org.hamcrest.Matchers.startsWith("CON ")))
+                .andReturn();
+
+        UssdGatewayRequest replay = new UssdGatewayRequest(
+                request.sessionId(),
+                request.serviceCode(),
+                request.phoneNumber(),
+                "2",
+                request.networkCode(),
+                request.callbackId());
+        postGateway(replay)
+                .andExpect(status().isOk())
+                .andExpect(content().string(first.getResponse().getContentAsString()))
+                .andReturn();
+
+        assertEquals(1, count("ussd_sessions"));
+        assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM ussd_gateway_callbacks WHERE session_id = ? AND callback_id = ?",
+                Integer.class,
+                request.sessionId(),
+                request.callbackId()));
+    }
+
+    @Test
+    void gatewayRejectsMissingOrInvalidSignature() throws Exception {
+        UssdGatewayRequest request = new UssdGatewayRequest(
+                "MTN-SESSION-UNTRUSTED", "*123#", "08012345678", "", "MTN", "callback-1");
+        mockMvc.perform(post("/api/v1/ussd")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request))
+                        .header("X-USSD-Timestamp", java.time.Instant.now().getEpochSecond())
+                        .header("X-USSD-Signature", "00"))
+                .andExpect(status().isUnauthorized());
+        assertEquals(0, count("ussd_sessions"));
+    }
+
+    @Test
+    void ussdTransferFlowVerifiesPinAndPostsOnceWithoutPersistingPinInput() throws Exception {
+        var sender = registrationService.register("08012345678");
+        var recipient = registrationService.register("08087654321");
+        jdbcTemplate.update("UPDATE customers SET status = 'ACTIVE' WHERE id IN (?, ?)",
+                sender.customerId(), recipient.customerId());
+        jdbcTemplate.update(
+                "UPDATE wallet_balances SET ledger_balance = 100.00, available_balance = 100.00 "
+                        + "WHERE wallet_id = ?",
+                sender.wallet().walletId());
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(new CustomerPrincipal(sender.customerId())))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        String sessionId = "MTN-TRANSFER-" + java.util.UUID.randomUUID();
+        UssdGatewayRequest start = new UssdGatewayRequest(
+                sessionId, "*123#", "08012345678", "", "MTN", "cb-start");
+        postGateway(start).andExpect(status().isOk()).andExpect(content().string(
+                org.hamcrest.Matchers.containsString("Check Balance")));
+
+        postGateway(callback(sessionId, "cb-menu", "2"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("recipient wallet")));
+        postGateway(callback(sessionId, "cb-recipient", recipient.wallet().walletNumber()))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("transfer amount")));
+        postGateway(callback(sessionId, "cb-amount", "25.00"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("1. Confirm")));
+        postGateway(callback(sessionId, "cb-confirm", "1"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("transaction PIN")));
+        postGateway(callback(sessionId, "cb-pin", "4829"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.startsWith("END Transfer successful!")));
+
+        assertEquals(new java.math.BigDecimal("75.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                sender.wallet().walletId()));
+        assertEquals(new java.math.BigDecimal("25.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                recipient.wallet().walletId()));
+        assertFalse(jdbcTemplate.queryForObject(
+                "SELECT session_data::text LIKE '%4829%' FROM ussd_sessions WHERE session_id = ?",
+                Boolean.class,
+                sessionId));
+        assertEquals(1, count("wallet_transfers"));
+
+        String historySession = "MTN-HISTORY-" + java.util.UUID.randomUUID();
+        postGateway(new UssdGatewayRequest(
+                        historySession, "*123#", "08012345678", "", "MTN", "history-start"))
+                .andExpect(status().isOk());
+        postGateway(callback(historySession, "history-menu", "4"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("Last transaction")));
+        postGateway(callback(historySession, "history-last", "1"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.startsWith("END Recent transactions")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("Sent NGN 25.00")));
+    }
+
+    @Test
+    void expiredUssdSessionCannotContinueItsWorkflow() throws Exception {
+        UssdGatewayRequest start = new UssdGatewayRequest(
+                "MTN-SESSION-EXPIRED", "*123#", "08012345678", "", "MTN", "callback-start");
+        postGateway(start).andExpect(status().isOk());
+        jdbcTemplate.update(
+                "UPDATE ussd_sessions SET expires_at = now() - interval '1 second' WHERE session_id = ?",
+                start.sessionId());
+
+        postGateway(callback(start.sessionId(), "callback-late", "1"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("END Session expired. Dial again to start."));
+        assertEquals("EXPIRED", jdbcTemplate.queryForObject(
+                "SELECT session_status FROM ussd_sessions WHERE session_id = ?",
+                String.class,
+                start.sessionId()));
     }
 
     @Test
@@ -241,6 +380,9 @@ class CustomerRegistrationIntegrationTests {
 
     @Autowired
     private PinVerificationService pinVerificationService;
+
+    @Autowired
+    private UssdGatewayAuthenticationService ussdGatewayAuthenticationService;
 
     @MockitoBean
     private OtpVerificationService otpVerificationService;
@@ -786,6 +928,23 @@ class CustomerRegistrationIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"phoneNumber\":\"" + phoneNumber + "\"}"))
                 .andExpect(status().isCreated());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions postGateway(UssdGatewayRequest request)
+            throws Exception {
+        String timestamp = Long.toString(java.time.Instant.now().getEpochSecond());
+        String signature = ussdGatewayAuthenticationService.sign(request, timestamp);
+        String body = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(request);
+        return mockMvc.perform(post("/api/v1/ussd")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-USSD-Timestamp", timestamp)
+                .header("X-USSD-Signature", signature)
+                .content(body));
+    }
+
+    private UssdGatewayRequest callback(String sessionId, String callbackId, String text) {
+        return new UssdGatewayRequest(
+                sessionId, "*123#", "08012345678", text, "MTN", callbackId);
     }
 
     private int count(String tableName) {

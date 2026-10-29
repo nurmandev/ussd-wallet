@@ -75,6 +75,14 @@ public class Customer {
         return status;
     }
 
+    public String getFirstName() {
+        return firstName;
+    }
+
+    public String getLastName() {
+        return lastName;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }

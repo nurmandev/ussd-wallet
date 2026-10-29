@@ -1,6 +1,7 @@
 package com.nurudeen.ussd_wallet.common.exception;
 
 import com.nurudeen.ussd_wallet.common.response.ApiResponse;
+import com.nurudeen.ussd_wallet.ussd.service.UssdGatewayAuthenticationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -52,6 +53,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleCustomerIdentityUnavailable(
             CustomerIdentityUnavailableException exception) {
         return response(HttpStatus.FORBIDDEN, exception.getMessage());
+    }
+
+    @ExceptionHandler(UssdGatewayAuthenticationService.GatewayAuthenticationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleGatewayAuthentication(
+            UssdGatewayAuthenticationService.GatewayAuthenticationException exception) {
+        return response(HttpStatus.UNAUTHORIZED, "USSD gateway authentication failed");
     }
 
     @ExceptionHandler(PinAlreadyConfiguredException.class)
@@ -108,6 +115,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiResponse<Void>> handleMalformedRequest() {
         return response(HttpStatus.BAD_REQUEST, "Request body is invalid");
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidRequest(IllegalArgumentException exception) {
+        return response(HttpStatus.BAD_REQUEST, "Request validation failed");
     }
 
     @ExceptionHandler(ResourceCreationException.class)
