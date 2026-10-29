@@ -15,7 +15,9 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "wallets")
@@ -33,6 +35,7 @@ public class Wallet {
     private String walletNumber;
 
     @Column(nullable = false, length = 3, columnDefinition = "char(3)")
+    @JdbcTypeCode(SqlTypes.CHAR)
     private String currency;
 
     @Enumerated(EnumType.STRING)

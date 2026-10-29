@@ -2,6 +2,7 @@ package com.nurudeen.ussd_wallet.wallet.service;
 
 import com.nurudeen.ussd_wallet.config.WalletProperties;
 import java.security.SecureRandom;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -10,6 +11,7 @@ public class WalletNumberGeneratorService {
     private final WalletProperties.Number properties;
     private final SecureRandom secureRandom;
 
+    @Autowired
     public WalletNumberGeneratorService(WalletProperties properties) {
         this(properties, new SecureRandom());
     }

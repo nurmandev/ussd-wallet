@@ -18,7 +18,7 @@ public class SecurityConfig {
             HttpSecurity http,
             RegistrationRateLimitFilter registrationRateLimitFilter) throws Exception {
         return http
-                .csrf(csrf -> csrf.disable())
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/customers/register"))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(

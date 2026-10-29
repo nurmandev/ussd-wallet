@@ -3,6 +3,8 @@ package com.nurudeen.ussd_wallet.wallet.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -66,10 +68,33 @@ class WalletCreationServiceTests {
         when(repository.existsByWalletNumber("1023456789")).thenReturn(true);
 
         assertThrows(WalletNumberCollisionException.class, () -> service.createWallet(customer));
-        verify(generator, times(3)).generate();
-        verify(repository, times(3)).existsByWalletNumber("1023456789");
+        verify(generator, times(1)).generate();
+        verify(repository, times(1)).existsByWalletNumber("1023456789");
         verify(repository, org.mockito.Mockito.never())
                 .saveAndFlush(org.mockito.ArgumentMatchers.any(Wallet.class));
+    }
+
+    @Test
+    void createsWalletWithGeneratedNumberAndConfiguredCurrency() {
+        WalletNumberGeneratorService generator = mock(WalletNumberGeneratorService.class);
+        WalletRepository repository = mock(WalletRepository.class);
+        WalletCreationService service = new WalletCreationService(
+                generator, repository, new WalletProperties(
+                        new WalletProperties.Number("10", 10, 3), "NGN"));
+        Customer customer = new Customer("+2348012345678", CustomerStatus.PENDING);
+        Wallet savedWallet = mock(Wallet.class);
+
+        when(generator.generate()).thenReturn("1023456789");
+        when(repository.existsByWalletNumber("1023456789")).thenReturn(false);
+        when(repository.saveAndFlush(argThat(wallet ->
+                wallet.getWalletNumber().equals("1023456789")
+                        && wallet.getCurrency().equals("NGN"))))
+                .thenReturn(savedWallet);
+
+        assertEquals(savedWallet, service.createWallet(customer));
+        verify(repository).existsByCustomer_Id(customer.getId());
+        verify(repository).existsByWalletNumber("1023456789");
+        verify(repository).saveAndFlush(any(Wallet.class));
     }
 
     @Test

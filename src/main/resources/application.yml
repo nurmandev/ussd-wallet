@@ -1,8 +1,10 @@
 spring:
+  config:
+    import: optional:file:.env[.properties]
   application:
     name: ussd-wallet
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/ussd_wallet}
+    url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
   jpa:

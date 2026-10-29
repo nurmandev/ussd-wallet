@@ -14,7 +14,6 @@ public class WalletCreationService {
     private final WalletNumberGeneratorService numberGeneratorService;
     private final WalletRepository walletRepository;
     private final WalletProperties walletProperties;
-    private final int maxRetries;
 
     public WalletCreationService(
             WalletNumberGeneratorService numberGeneratorService,
@@ -23,7 +22,6 @@ public class WalletCreationService {
         this.numberGeneratorService = numberGeneratorService;
         this.walletRepository = walletRepository;
         this.walletProperties = properties;
-        this.maxRetries = properties.number().maxRetries();
     }
 
     public Wallet createWallet(Customer customer) {
@@ -31,13 +29,11 @@ public class WalletCreationService {
             throw new WalletAlreadyExistsException();
         }
 
-        for (int attempt = 0; attempt < maxRetries; attempt++) {
-            String walletNumber = numberGeneratorService.generate();
-            if (!walletRepository.existsByWalletNumber(walletNumber)) {
-                return walletRepository.saveAndFlush(
-                        new Wallet(customer, walletNumber, walletProperties.currency()));
-            }
+        String walletNumber = numberGeneratorService.generate();
+        if (walletRepository.existsByWalletNumber(walletNumber)) {
+            throw new WalletNumberCollisionException();
         }
-        throw new WalletNumberCollisionException();
+        return walletRepository.saveAndFlush(
+                new Wallet(customer, walletNumber, walletProperties.currency()));
     }
 }
