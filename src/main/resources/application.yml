@@ -4,7 +4,7 @@ spring:
   application:
     name: ussd-wallet
   datasource:
-    url: ${DB_URL}
+    url: "${DB_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ussd_wallet}}"
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
   jpa:
@@ -55,6 +55,18 @@ ussd:
   simulator-enabled: ${USSD_SIMULATOR_ENABLED:false}
 
 server:
+  port: ${PORT:8080}
   error:
     include-message: never
     include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never

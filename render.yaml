@@ -1,0 +1,46 @@
+databases:
+  - name: ussd-wallet-db
+    databaseName: ussd_wallet
+    user: ussd_wallet
+    plan: basic-256mb
+    region: oregon
+    ipAllowList: []
+
+services:
+  - type: web
+    name: ussd-wallet
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    region: oregon
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: DB_HOST
+        fromDatabase:
+          name: ussd-wallet-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: ussd-wallet-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: ussd-wallet-db
+          property: database
+      - key: DB_USERNAME
+        fromDatabase:
+          name: ussd-wallet-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: ussd-wallet-db
+          property: password
+      - key: PIN_PEPPER
+        generateValue: true
+      - key: USSD_GATEWAY_SECRET
+        generateValue: true
+      - key: USSD_SIMULATOR_ENABLED
+        value: "false"

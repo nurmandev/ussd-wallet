@@ -42,6 +42,48 @@ Then start the application:
 Flyway applies the database migrations at startup. Hibernate validates the
 schema and does not create or alter tables.
 
+## Docker and Render deployment
+
+The multi-stage `Dockerfile` builds the executable Spring Boot jar and runs it
+as a non-root user on Java 21. The container listens on Render's `PORT`
+environment variable (default `8080`) and exposes the sanitized
+`/actuator/health` endpoint for health checks. Flyway applies migrations when
+the app starts.
+
+### Deploy to Render
+
+1. Push this repository to GitHub and select **New + → Blueprint** in Render.
+2. Connect the repository and let Render apply [`render.yaml`](./render.yaml).
+   It provisions a private PostgreSQL database and a Docker web service.
+3. Render generates `PIN_PEPPER` and `USSD_GATEWAY_SECRET`. Keep these values
+   private and retain them across redeployments; changing the PIN pepper makes
+   existing PINs unverifiable.
+4. Wait for the database and service health check, then use the assigned
+   `https://...onrender.com` URL.
+
+The blueprint uses paid `starter` web and `basic-256mb` database plans in the
+Oregon region; change the region and plans in `render.yaml` before creating
+the Blueprint if needed. Database migrations run automatically on application
+startup. The Render deployment disables the development simulator.
+
+### Run locally with Docker Compose
+
+Copy `.env.example` to `.env`, set unique `DB_USERNAME`, `DB_PASSWORD`,
+`PIN_PEPPER`, and `USSD_GATEWAY_SECRET` values, then run:
+
+```sh
+docker compose up --build
+```
+
+Compose starts PostgreSQL with a persistent named volume and waits for its
+health check before starting the application. Open `http://localhost:8080`.
+Stop the containers with `docker compose down`; database data remains in the
+volume. To delete local database data as well, run `docker compose down -v`.
+
+The app accepts either the existing `DB_URL` JDBC setting or separate
+`DB_HOST`, `DB_PORT`, and `DB_NAME` settings. Never commit `.env` or use
+development secrets in a deployed environment.
+
 Optional wallet and registration settings:
 
 | Variable | Default | Description |
