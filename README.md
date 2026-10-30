@@ -106,6 +106,11 @@ Optional wallet and registration settings:
 | `USSD_SIMULATOR_SECRET` | Required if enabled | Separate local simulator API secret. |
 | `TRANSFER_MINIMUM_AMOUNT` | `0.01` | Minimum wallet transfer amount. |
 | `TRANSFER_MAXIMUM_AMOUNT` | `1000000.00` | Maximum wallet transfer amount. |
+| `TRANSFER_DAILY_AMOUNT_LIMIT` | `2000000.00` | Maximum sum of successful sender transfers per UTC day. |
+| `TRANSFER_DAILY_COUNT_LIMIT` | `20` | Maximum successful sender transfers per UTC day. |
+| `TRANSFER_INTENT_EXPIRY_SECONDS` | `300` | Time allowed to confirm a validated transfer. |
+| `TRANSFER_FEE` | `0.00` | Configured internal transfer fee. Non-zero fees are rejected until fee-ledger posting is implemented. |
+| `TRANSFER_INTENT_EXPIRY_SCAN_MILLIS` | `60000` | Background scan interval for marking expired intents. |
 
 The local registration endpoint is intentionally public because customer
 authentication is not implemented yet. CSRF is exempted only for this public
@@ -173,7 +178,9 @@ Flyway migration V1 creates `customers`, `customer_security`, `wallets`,
 `wallet_balances`, and `ledger_accounts`; V2 adds PIN audit and recovery
 authorization records; V3 adds transfers and double-entry transfer records.
 V4 adds persistent USSD sessions, session lifecycle events, and callback replay
-records.
+records; V5 adds USSD optimistic-lock versions; V6 adds balance-enquiry audit
+and rate-limit records; V7 adds transfer intents, metadata, transfer audit,
+and recipient-lookup rate limits.
 Database unique constraints protect
 phone numbers, wallet numbers, one-wallet-per-customer, and one-ledger-account
 per wallet. If creation of any linked record fails, the transaction rolls back.
@@ -265,48 +272,76 @@ before customers or a USSD gateway can use them. The transfer service invokes
 `PinVerificationService` before balance locks or financial changes, but does
 not replace customer authentication or a wallet-funding/deposit integration.
 
-## PIN-authorized wallet transfers
+## Internal wallet transfers
 
-`POST /api/v1/wallet/transfers` moves funds between active customer wallets.
-The authenticated customer is always the sender; the request cannot select a
-sender ID. It validates recipient, amount, wallet/customer state, and currency,
-then verifies the supplied PIN before locking balances or making financial
-changes. Both wallet rows and both balance rows are locked in deterministic
-order. Debit, credit, transfer record, and debit/credit entries commit in one
-database transaction. Insufficient funds, a wrong or locked PIN, or any
-recording error leaves balances unchanged.
+The two-stage API is rooted at `/api/v1/transfers`. All endpoints require a
+trusted `CustomerPrincipal`; the authenticated customer is always the sender.
+Use these steps:
 
-Every request must supply a fresh UUID `idempotencyKey`. Replaying an identical
-request with that key returns the original transfer reference without moving
-funds a second time; reusing the key for different transfer details is rejected.
-PIN verification occurs on every request, including an idempotent retry.
+1. `GET /api/v1/wallet/lookup/{walletNumber}` checks recipient eligibility and
+   returns a masked name, wallet number, status, and currency only.
+2. `POST /api/v1/transfers/validate` with the recipient wallet number, amount,
+   optional description, and a client-generated UUID `idempotencyKey` creates
+   an immutable, expiring intent. It does not reserve funds.
+3. Show the returned recipient, amount, fee, and total debit for confirmation.
+4. `POST /api/v1/transfers/confirm` with the intent ID, the same idempotency
+   key, and the transaction PIN revalidates current wallet state, available
+   balance, limits, and PIN before posting.
+5. `GET /api/v1/transfers/history?page=0&size=20` lists only transactions
+   involving the authenticated wallet. `GET /api/v1/transfers/{reference}` and
+   `GET /api/v1/transfers/{reference}/receipt` return receipt details only to
+   one of the transaction's wallet owners.
+6. `DELETE /api/v1/transfers/intents/{intentId}` cancels an uncompleted intent.
 
-Example request:
+The request cannot set a sender ID, fee, total debit, status, or balance.
+Transfer fees default to zero; nonzero fees are rejected until a fee/revenue
+ledger posting path is available. The limit examples are configurable
+development controls, not regulatory advice. Daily completed transfer amount
+and count are checked again during posting, while the sender wallet row is
+locked, so concurrent validations cannot authorize overspending or bypass the
+daily controls. A transfer intent does not reserve funds; balance and wallet
+state are rechecked when confirmed.
+
+Posting remains centralized in `WalletTransferService`. It verifies PIN through
+the existing lockout-aware PIN service, locks both wallets in sorted UUID order
+and both balance rows, debits and credits in the same PostgreSQL transaction,
+and creates one DEBIT and one CREDIT entry tied to the same reference. A
+database uniqueness constraint on sender and idempotency key prevents duplicate
+posting; reuse with different details is rejected. Successful transfer rows
+are the posted transaction history; failed attempts are not presented as
+completed transactions. A post-commit notification hook is installed and logs
+only the transfer reference; no SMS/email provider is configured.
+
+USSD uses the same transfer-intent service and posting service: recipient
+lookup, recipient confirmation, amount, review, PIN, and execution. PINs are
+never placed in persisted USSD session data. Duplicate callbacks return their
+stored USSD response, and the transfer idempotency constraint is a second
+protection against repeat debits.
+
+Example intent request:
 
 ```json
 {
   "recipientWalletNumber": "1098765432",
   "amount": 5000.00,
-  "pin": "4829",
+  "description": "Personal transfer",
   "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
 }
 ```
 
-Successful response:
+Confirmation request:
 
 ```json
 {
-  "success": true,
-  "message": "Transfer completed successfully",
-  "data": {
-    "reference": "TXN-4b9e2f0a-2644-4d86-b1cc-ce9c4a0f2e43",
-    "recipientWalletNumber": "1098765432",
-    "amount": 5000.00,
-    "currency": "NGN",
-    "createdAt": "2026-10-29T12:00:00Z"
-  }
+  "transferIntentId": "16f11902-0e61-46d4-b89e-5a0fc0a3fe82",
+  "transactionPin": "4829",
+  "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
 }
 ```
+
+`POST /api/v1/wallet/transfers` remains as the existing authenticated,
+PIN-protected synchronous transfer endpoint for compatibility. New REST clients
+should use the intent workflow.
 
 ## Wallet retrieval
 
@@ -429,8 +464,9 @@ log callback bodies.
 V4 persists session state and safe workflow data in PostgreSQL, serializes
 callbacks for the same session with row locks, and stores the original
 `CON`/`END` result per callback ID so a gateway retry gets the same response.
-Session state records transfer recipient, amount, and an idempotency key, but
-never stores PINs or OTPs. Inactivity defaults to 120 seconds; scheduled
+Session state records transfer recipient, amount, transfer intent ID, and
+idempotency key, but never stores PINs or OTPs. V7 adds immutable expiring
+transfer intents, transfer description/fee metadata, and financial audit rows. Inactivity defaults to 120 seconds; scheduled
 cleanup marks sessions expired, clears unfinished workflow data, and removes
 expired session history after the configured retention period. A phone-number
 rate limiter is applied in the running process; production multi-instance

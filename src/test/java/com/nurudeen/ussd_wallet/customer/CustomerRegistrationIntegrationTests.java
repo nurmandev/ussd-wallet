@@ -140,10 +140,13 @@ class CustomerRegistrationIntegrationTests {
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("recipient wallet")));
         postGateway(callback(sessionId, "cb-recipient", recipient.wallet().walletNumber()))
                 .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("Confirm recipient")));
+        postGateway(callback(sessionId, "cb-recipient-confirm", "1"))
+                .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("transfer amount")));
         postGateway(callback(sessionId, "cb-amount", "25.00"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("1. Confirm")));
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("1 Confirm")));
         postGateway(callback(sessionId, "cb-confirm", "1"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("transaction PIN")));
@@ -367,6 +370,74 @@ class CustomerRegistrationIntegrationTests {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    void transferIntentConfirmationPostsAtomicTransferAndAllowsSafeRetry() throws Exception {
+        var sender = registrationService.register("08012345678");
+        var recipient = registrationService.register("08087654321");
+        jdbcTemplate.update("UPDATE customers SET status = 'ACTIVE' WHERE id IN (?, ?)",
+                sender.customerId(), recipient.customerId());
+        jdbcTemplate.update(
+                "UPDATE wallet_balances SET ledger_balance = 100.00, available_balance = 100.00 "
+                        + "WHERE wallet_id = ?",
+                sender.wallet().walletId());
+        var principal = new CustomerPrincipal(sender.customerId());
+        String idempotencyKey = java.util.UUID.randomUUID().toString();
+        mockMvc.perform(post("/api/v1/wallet/pin/setup")
+                .with(user(principal))
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"pin":"4829","confirmPin":"4829"}
+                        """)).andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/transfers/validate")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"recipientWalletNumber":"%s","amount":40.00,\
+                                "description":"Integration transfer","idempotencyKey":"%s"}
+                                """.formatted(recipient.wallet().walletNumber(), idempotencyKey)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amount").value(40.0))
+                .andExpect(jsonPath("$.data.fee").value(0.0))
+                .andExpect(jsonPath("$.data.totalDebit").value(40.0));
+
+        String intentId = jdbcTemplate.queryForObject(
+                "SELECT id::text FROM wallet_transfer_intents", String.class);
+        String confirmation = """
+                {"transferIntentId":"%s","transactionPin":"4829","idempotencyKey":"%s"}
+                """.formatted(intentId, idempotencyKey);
+        mockMvc.perform(post("/api/v1/transfers/confirm")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(confirmation))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SUCCESSFUL"))
+                .andExpect(jsonPath("$.data.amount").value(40.0));
+        mockMvc.perform(post("/api/v1/transfers/confirm")
+                        .with(user(principal))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(confirmation))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SUCCESSFUL"));
+
+        assertEquals(new java.math.BigDecimal("60.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                sender.wallet().walletId()));
+        assertEquals(new java.math.BigDecimal("40.00"), jdbcTemplate.queryForObject(
+                "SELECT available_balance FROM wallet_balances WHERE wallet_id = ?",
+                java.math.BigDecimal.class,
+                recipient.wallet().walletId()));
+        assertEquals(1, count("wallet_transfers"));
+        assertEquals(2, count("wallet_transfer_entries"));
+        assertEquals("COMPLETED", jdbcTemplate.queryForObject(
+                "SELECT status FROM wallet_transfer_intents", String.class));
     }
 
     @Autowired

@@ -33,6 +33,12 @@ public class WalletTransfer {
     @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal amount;
 
+    @Column(nullable = false, precision = 19, scale = 2)
+    private BigDecimal fee = BigDecimal.ZERO.setScale(2);
+
+    @Column(length = 140)
+    private String description;
+
     @Column(nullable = false, length = 3, columnDefinition = "char(3)")
     @JdbcTypeCode(SqlTypes.CHAR)
     private String currency;
@@ -50,14 +56,18 @@ public class WalletTransfer {
             UUID recipientWalletId,
             UUID idempotencyKey,
             BigDecimal amount,
-            String currency) {
+            BigDecimal fee,
+            String currency,
+            String description) {
         this.id = id;
         this.reference = "TXN-" + id;
         this.senderWalletId = senderWalletId;
         this.recipientWalletId = recipientWalletId;
         this.idempotencyKey = idempotencyKey;
         this.amount = amount;
+        this.fee = fee;
         this.currency = currency;
+        this.description = description;
     }
 
     public UUID getId() {
@@ -82,6 +92,18 @@ public class WalletTransfer {
 
     public BigDecimal getAmount() {
         return amount;
+    }
+
+    public BigDecimal getFee() {
+        return fee;
+    }
+
+    public BigDecimal getTotalDebit() {
+        return amount.add(fee);
+    }
+
+    public String getDescription() {
+        return description;
     }
 
     public String getCurrency() {

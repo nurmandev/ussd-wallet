@@ -64,6 +64,18 @@ public class WalletTransferEntry {
         this.currency = currency;
     }
 
+    public EntryType getEntryType() {
+        return entryType;
+    }
+
+    public BigDecimal getAmount() {
+        return amount;
+    }
+
+    public String getCurrency() {
+        return currency;
+    }
+
     public enum EntryType {
         DEBIT,
         CREDIT

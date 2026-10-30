@@ -26,4 +26,10 @@ public interface WalletTransferEntryRepository extends JpaRepository<WalletTrans
             """)
     List<UssdTransactionHistoryItem> findRecentForCustomer(
             @Param("customerId") UUID customerId, Pageable pageable);
+
+    @Query("""
+            select count(entry) from WalletTransferEntry entry
+            where entry.transfer.id = :transferId
+            """)
+    long countByTransferId(@Param("transferId") UUID transferId);
 }

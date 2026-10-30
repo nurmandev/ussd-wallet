@@ -26,10 +26,15 @@ import com.nurudeen.ussd_wallet.ussd.session.UssdSessionRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionStatus;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletBalanceResponse;
+import com.nurudeen.ussd_wallet.wallet.dto.TransferConfirmationResponse;
+import com.nurudeen.ussd_wallet.wallet.dto.TransferIntentResponse;
+import com.nurudeen.ussd_wallet.wallet.dto.RecipientWalletResponse;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferEntryRepository;
 import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceService;
-import com.nurudeen.ussd_wallet.wallet.service.WalletTransferService;
+import com.nurudeen.ussd_wallet.wallet.service.TransferIntentService;
+import com.nurudeen.ussd_wallet.wallet.service.RecipientWalletLookupService;
+import com.nurudeen.ussd_wallet.wallet.enums.TransferIntentStatus;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -52,9 +57,13 @@ class UssdSessionServiceTests {
     private final CustomerSecurityRepository securityRepository = mock(CustomerSecurityRepository.class);
     private final WalletRepository walletRepository = mock(WalletRepository.class);
     private final WalletBalanceService walletBalanceService = mock(WalletBalanceService.class);
+    private final RecipientWalletLookupService recipientWalletLookupService =
+            mock(RecipientWalletLookupService.class);
+    private final TransferIntentService transferIntentService = mock(TransferIntentService.class);
     private final PhoneNumberNormalizer phoneNumberNormalizer = mock(PhoneNumberNormalizer.class);
     private final Customer customer = customer();
     private final Wallet wallet = wallet();
+    private final Wallet recipientWallet = recipientWallet();
     private final CustomerSecurity security = configuredSecurity();
     private final UssdSession session = new UssdSession(
             "session-1",
@@ -82,7 +91,13 @@ class UssdSessionServiceTests {
                 .thenReturn(Optional.empty());
         when(customerRepository.findByPhoneNumber(phoneNumber)).thenReturn(Optional.of(customer));
         when(securityRepository.findById(customerId)).thenReturn(Optional.of(security));
-        when(walletRepository.findByWalletNumber(anyString())).thenReturn(Optional.of(wallet));
+        when(walletRepository.findByWalletNumber(anyString())).thenReturn(Optional.of(recipientWallet));
+        when(recipientWalletLookupService.lookup(any(), anyString())).thenReturn(
+                new RecipientWalletResponse(
+                        recipientWallet.getWalletNumber(),
+                        "J*** D***",
+                        recipientWallet.getStatus(),
+                        recipientWallet.getCurrency()));
         when(phoneNumberNormalizer.normalize(anyString())).thenReturn(phoneNumber);
         when(walletBalanceService.getCustomerBalance(
                         customerId,
@@ -106,7 +121,8 @@ class UssdSessionServiceTests {
                 securityRepository,
                 walletRepository,
                 walletBalanceService,
-                mock(WalletTransferService.class),
+                recipientWalletLookupService,
+                transferIntentService,
                 mock(WalletTransferEntryRepository.class),
                 mock(TransactionPinManagementService.class),
                 phoneNumberNormalizer,
@@ -149,6 +165,69 @@ class UssdSessionServiceTests {
                 customerId, WalletBalanceService.Channel.USSD, "session-1", "cb-balance");
     }
 
+    @Test
+    void transferFlowConfirmsRecipientReviewsIntentAndExecutesWithPinWithoutPersistingPin() {
+        UUID intentId = UUID.randomUUID();
+        when(transferIntentService.createIntent(
+                        org.mockito.ArgumentMatchers.eq(customerId),
+                        any(com.nurudeen.ussd_wallet.wallet.dto.TransferValidationRequest.class)))
+                .thenReturn(new TransferIntentResponse(
+                        intentId,
+                        "R*** C***",
+                        recipientWallet.getWalletNumber(),
+                        new java.math.BigDecimal("25.00"),
+                        new java.math.BigDecimal("0.00"),
+                        new java.math.BigDecimal("25.00"),
+                        "NGN",
+                        TransferIntentStatus.PENDING_CONFIRMATION,
+                        NOW.plusSeconds(300)));
+        when(transferIntentService.confirm(
+                        org.mockito.ArgumentMatchers.eq(customerId),
+                        any(com.nurudeen.ussd_wallet.wallet.dto.TransferConfirmationRequest.class),
+                        org.mockito.ArgumentMatchers.eq(
+                                com.nurudeen.ussd_wallet.wallet.service.WalletTransferService.TransferChannel.USSD),
+                        org.mockito.ArgumentMatchers.eq("cb-pin")))
+                .thenReturn(new TransferConfirmationResponse(
+                        "SUCCESSFUL",
+                        "TXN-test",
+                        recipientWallet.getWalletNumber(),
+                        new java.math.BigDecimal("25.00"),
+                        new java.math.BigDecimal("0.00"),
+                        new java.math.BigDecimal("25.00"),
+                        "NGN",
+                        NOW));
+
+        service.process(request("", "cb-start-transfer"));
+        service.process(request("2", "cb-transfer-menu"));
+        UUID idempotencyKey = UUID.fromString(session.getSessionData().get("idempotencyKey"));
+        UssdResponse recipientPrompt =
+                service.process(request(recipientWallet.getWalletNumber(), "cb-recipient"));
+        assertEquals("TRANSFER_RECIPIENT_CONFIRM", session.getCurrentStep());
+        org.junit.jupiter.api.Assertions.assertTrue(recipientPrompt.message().contains("Confirm recipient"));
+
+        service.process(request("1", "cb-recipient-confirm"));
+        UssdResponse review = service.process(request("25.00", "cb-amount"));
+        assertEquals("TRANSFER_CONFIRM", session.getCurrentStep());
+        org.junit.jupiter.api.Assertions.assertTrue(review.message().contains("Fee 0.00"));
+        service.process(request("1", "cb-review"));
+        assertEquals("TRANSFER_PIN", session.getCurrentStep());
+
+        UssdResponse result = service.process(request("4829", "cb-pin"));
+
+        assertEquals(UssdResponse.Type.END, result.type());
+        org.junit.jupiter.api.Assertions.assertTrue(result.message().contains("TXN-test"));
+        org.junit.jupiter.api.Assertions.assertFalse(session.getSessionData().containsValue("4829"));
+        org.mockito.Mockito.verify(transferIntentService).confirm(
+                org.mockito.ArgumentMatchers.eq(customerId),
+                org.mockito.ArgumentMatchers.argThat(confirm ->
+                        confirm.transferIntentId().equals(intentId)
+                                && confirm.idempotencyKey().equals(idempotencyKey)
+                                && confirm.transactionPin().equals("4829")),
+                org.mockito.ArgumentMatchers.eq(
+                        com.nurudeen.ussd_wallet.wallet.service.WalletTransferService.TransferChannel.USSD),
+                org.mockito.ArgumentMatchers.eq("cb-pin"));
+    }
+
     private UssdGatewayRequest request(String text, String callbackId) {
         return new UssdGatewayRequest(
                 "session-1", "*123#", "08012345678", text, "MTN", callbackId);
@@ -162,6 +241,14 @@ class UssdSessionServiceTests {
 
     private Wallet wallet() {
         Wallet entity = new Wallet(customer, "1023456789", "NGN");
+        ReflectionTestUtils.setField(entity, "id", UUID.randomUUID());
+        return entity;
+    }
+
+    private Wallet recipientWallet() {
+        Customer owner = new Customer("+2348098765432", CustomerStatus.ACTIVE);
+        ReflectionTestUtils.setField(owner, "id", UUID.randomUUID());
+        Wallet entity = new Wallet(owner, "1098765432", "NGN");
         ReflectionTestUtils.setField(entity, "id", UUID.randomUUID());
         return entity;
     }

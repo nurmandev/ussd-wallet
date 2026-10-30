@@ -29,6 +29,11 @@ wallet:
   transfer:
     minimum-amount: ${TRANSFER_MINIMUM_AMOUNT:0.01}
     maximum-amount: ${TRANSFER_MAXIMUM_AMOUNT:1000000.00}
+    limits:
+      daily-amount: ${TRANSFER_DAILY_AMOUNT_LIMIT:2000000.00}
+      daily-count: ${TRANSFER_DAILY_COUNT_LIMIT:20}
+      intent-expiry-seconds: ${TRANSFER_INTENT_EXPIRY_SECONDS:300}
+      fee: ${TRANSFER_FEE:0.00}
   registration:
     initial-customer-status: ${REGISTRATION_INITIAL_CUSTOMER_STATUS:PENDING}
     rate-limit:

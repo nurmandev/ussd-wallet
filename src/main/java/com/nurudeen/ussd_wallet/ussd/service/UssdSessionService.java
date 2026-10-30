@@ -27,16 +27,22 @@ import com.nurudeen.ussd_wallet.ussd.session.UssdSessionEvent;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionEventRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionStatus;
-import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferRequest;
-import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferResponse;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletBalanceResponse;
+import com.nurudeen.ussd_wallet.wallet.dto.TransferConfirmationRequest;
+import com.nurudeen.ussd_wallet.wallet.dto.TransferValidationRequest;
+import com.nurudeen.ussd_wallet.wallet.dto.TransferIntentResponse;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferEntryRepository;
 import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceRateLimitExceededException;
 import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceService;
-import com.nurudeen.ussd_wallet.wallet.service.WalletTransferService;
 import com.nurudeen.ussd_wallet.wallet.service.WalletUnavailableException;
+import com.nurudeen.ussd_wallet.wallet.service.WalletTransferService;
+import com.nurudeen.ussd_wallet.wallet.service.TransferIntentService;
+import com.nurudeen.ussd_wallet.wallet.service.TransferIntentExpiredException;
+import com.nurudeen.ussd_wallet.wallet.service.TransferLimitExceededException;
+import com.nurudeen.ussd_wallet.wallet.service.RecipientLookupRateLimitExceededException;
+import com.nurudeen.ussd_wallet.wallet.service.RecipientWalletLookupService;
 import org.springframework.data.domain.PageRequest;
 import java.math.BigDecimal;
 import java.text.NumberFormat;
@@ -60,7 +66,8 @@ public class UssdSessionService {
     private final CustomerSecurityRepository securityRepository;
     private final WalletRepository walletRepository;
     private final WalletBalanceService walletBalanceService;
-    private final WalletTransferService transferService;
+    private final RecipientWalletLookupService recipientWalletLookupService;
+    private final TransferIntentService transferIntentService;
     private final WalletTransferEntryRepository transferEntryRepository;
     private final TransactionPinManagementService pinManagementService;
     private final PhoneNumberNormalizer phoneNumberNormalizer;
@@ -77,7 +84,8 @@ public class UssdSessionService {
             CustomerSecurityRepository securityRepository,
             WalletRepository walletRepository,
             WalletBalanceService walletBalanceService,
-            WalletTransferService transferService,
+            RecipientWalletLookupService recipientWalletLookupService,
+            TransferIntentService transferIntentService,
             WalletTransferEntryRepository transferEntryRepository,
             TransactionPinManagementService pinManagementService,
             PhoneNumberNormalizer phoneNumberNormalizer,
@@ -92,7 +100,8 @@ public class UssdSessionService {
         this.securityRepository = securityRepository;
         this.walletRepository = walletRepository;
         this.walletBalanceService = walletBalanceService;
-        this.transferService = transferService;
+        this.recipientWalletLookupService = recipientWalletLookupService;
+        this.transferIntentService = transferIntentService;
         this.transferEntryRepository = transferEntryRepository;
         this.pinManagementService = pinManagementService;
         this.phoneNumberNormalizer = phoneNumberNormalizer;
@@ -210,6 +219,15 @@ public class UssdSessionService {
         } catch (WalletBalanceRateLimitExceededException exception) {
             response = end("Too many balance enquiries. Please try again later.");
             close(session, "BALANCE_RATE_LIMITED", UssdSessionStatus.FAILED, now);
+        } catch (RecipientLookupRateLimitExceededException exception) {
+            response = end("Too many recipient lookups. Please try again later.");
+            close(session, "RECIPIENT_LOOKUP_RATE_LIMITED", UssdSessionStatus.FAILED, now);
+        } catch (TransferLimitExceededException exception) {
+            response = end("Your daily transfer limit has been reached.");
+            close(session, "TRANSFER_LIMIT_REACHED", UssdSessionStatus.FAILED, now);
+        } catch (TransferIntentExpiredException exception) {
+            response = end("Confirmation expired. Please start the transfer again.");
+            close(session, "TRANSFER_INTENT_EXPIRED", UssdSessionStatus.FAILED, now);
         } catch (WalletTransferConflictException exception) {
             response = end("Transfer could not be completed. Please review the details.");
             close(session, "TRANSFER_REJECTED", UssdSessionStatus.FAILED, now);
@@ -266,9 +284,10 @@ public class UssdSessionService {
             case "PIN_SETUP" -> setupPin(session, customer, input, now);
             case "MAIN" -> mainSelection(session, customer, input, now, correlationId);
             case "TRANSFER_RECIPIENT" -> transferRecipient(session, customer, input, now);
-            case "TRANSFER_AMOUNT" -> transferAmount(session, input, now);
-            case "TRANSFER_CONFIRM" -> confirmTransfer(session, input, now);
-            case "TRANSFER_PIN" -> executeTransfer(session, customer, input, now);
+            case "TRANSFER_RECIPIENT_CONFIRM" -> confirmRecipient(session, input, now);
+            case "TRANSFER_AMOUNT" -> transferAmount(session, customer, input, now);
+            case "TRANSFER_CONFIRM" -> confirmTransfer(session, customer, input, now);
+            case "TRANSFER_PIN" -> executeTransfer(session, customer, input, now, correlationId);
             case "PIN_CHANGE" -> changePin(session, customer, input, now);
             case "HISTORY_CHOICE" -> historyChoice(session, customer, input, now);
             case "HISTORY_MORE" -> historyMore(session, customer, input, now);
@@ -368,32 +387,55 @@ public class UssdSessionService {
 
     private UssdResponse transferRecipient(UssdSession session, Customer customer, String input, Instant now) {
         String walletNumber = inputValidator.walletNumber(input);
-        Wallet recipient = walletRepository.findByWalletNumber(walletNumber)
-                .orElseThrow(WalletNotFoundException::new);
-        if (recipient.getCustomerId().equals(customer.getId())) {
-            return continueWith("You cannot transfer to your own wallet. Enter another wallet:");
-        }
-        if (recipient.getStatus() != com.nurudeen.ussd_wallet.wallet.enums.WalletStatus.ACTIVE
-                || !recipient.getCustomerStatus().isFinanciallyActive()) {
-            return continueWith("Recipient wallet is unavailable. Enter another wallet:");
-        }
+        var recipient = recipientWalletLookupService.lookup(customer.getId(), walletNumber);
         session.getSessionData().put("recipientWalletNumber", walletNumber);
-        session.getSessionData().put("recipientName", recipientName(recipient));
-        transition(session, "TRANSFER", "TRANSFER_AMOUNT", UssdSessionStatus.WAITING_FOR_INPUT, now);
-        return continueWith("Enter transfer amount in NGN:");
+        session.getSessionData().put("recipientName", recipient.customerName());
+        transition(session, "TRANSFER", "TRANSFER_RECIPIENT_CONFIRM", UssdSessionStatus.WAITING_FOR_INPUT, now);
+        return continueWith("Confirm recipient\nName: " + safeDisplay(recipient.customerName())
+                + "\nWallet: " + walletNumber + "\n1 Continue  2 Cancel");
     }
 
-    private UssdResponse transferAmount(UssdSession session, String input, Instant now) {
+    private UssdResponse confirmRecipient(UssdSession session, String input, Instant now) {
+        if (input.equals("2")) {
+            clearSessionData(session);
+            transition(session, MAIN_MENU, "MAIN", UssdSessionStatus.WAITING_FOR_INPUT, now);
+            return continueWith("Transfer cancelled.\n1 Balance  2 Send Money");
+        }
+        if (!input.equals("1")) {
+            return continueWith("Enter 1 to continue or 2 to cancel.");
+        }
+        transition(session, "TRANSFER", "TRANSFER_AMOUNT", UssdSessionStatus.WAITING_FOR_INPUT, now);
+        return continueWith("Enter transfer amount:");
+    }
+
+    private UssdResponse transferAmount(UssdSession session, Customer customer, String input, Instant now) {
         BigDecimal amount = inputValidator.amount(input);
         session.getSessionData().put("amount", amount.toPlainString());
+        UUID idempotencyKey = UUID.fromString(requireSessionValue(session, "idempotencyKey"));
+        TransferIntentResponse intent = transferIntentService.createIntent(
+                customer.getId(),
+                new TransferValidationRequest(
+                        requireSessionValue(session, "recipientWalletNumber"),
+                        amount,
+                        null,
+                        idempotencyKey));
+        session.getSessionData().put("transferIntentId", intent.transferIntentId().toString());
         transition(session, "TRANSFER", "TRANSFER_CONFIRM", UssdSessionStatus.WAITING_FOR_INPUT, now);
-        return continueWith("Confirm transfer\nTo: " + safeDisplay(session.getSessionData().get("recipientName"))
-                + "\nWallet: " + session.getSessionData().get("recipientWalletNumber")
-                + "\nAmount: NGN " + formatAmount(amount) + "\n1. Confirm\n2. Cancel");
+        return continueWith("Review transfer\nTo: " + safeDisplay(intent.recipientName())
+                + "\n" + intent.currency() + " " + formatAmount(intent.amount())
+                + " Fee " + formatAmount(intent.fee())
+                + "\nTotal " + formatAmount(intent.totalDebit()) + "\n1 Confirm  2 Cancel");
     }
 
-    private UssdResponse confirmTransfer(UssdSession session, String input, Instant now) {
+    private UssdResponse confirmTransfer(
+            UssdSession session, Customer customer, String input, Instant now) {
         if (input.equals("2")) {
+            String intentId = session.getSessionData().get("transferIntentId");
+            if (intentId != null) {
+                transferIntentService.cancel(
+                        customer.getId(),
+                        UUID.fromString(intentId));
+            }
             clearSessionData(session);
             close(session, "TRANSFER_CANCELLED", UssdSessionStatus.CANCELLED, now);
             return end("Transfer cancelled.");
@@ -405,16 +447,20 @@ public class UssdSessionService {
         return continueWith("Enter your transaction PIN:");
     }
 
-    private UssdResponse executeTransfer(UssdSession session, Customer customer, String pin, Instant now) {
+    private UssdResponse executeTransfer(
+            UssdSession session, Customer customer, String pin, Instant now, String correlationId) {
         if (!pin.matches("[0-9]{4,6}")) {
             return continueWith("Enter your 4-6 digit transaction PIN.");
         }
-        String walletNumber = requireSessionValue(session, "recipientWalletNumber");
-        BigDecimal amount = new BigDecimal(requireSessionValue(session, "amount"));
         UUID idempotencyKey = UUID.fromString(requireSessionValue(session, "idempotencyKey"));
-        WalletTransferResponse transfer = transferService.transfer(
+        var transfer = transferIntentService.confirm(
                 customer.getId(),
-                new WalletTransferRequest(walletNumber, amount, pin, idempotencyKey));
+                new TransferConfirmationRequest(
+                        UUID.fromString(requireSessionValue(session, "transferIntentId")),
+                        pin,
+                        idempotencyKey),
+                WalletTransferService.TransferChannel.USSD,
+                correlationId);
         clearSessionData(session);
         close(session, "TRANSFER_COMPLETED", UssdSessionStatus.COMPLETED, now);
         return end("Transfer successful!\nAmount: " + transfer.currency() + " "
@@ -641,13 +687,6 @@ public class UssdSessionService {
 
     private String safeDisplay(String input) {
         return input == null ? "" : input.replaceAll("[\\p{Cntrl}]", "").replaceAll("[*#]", " ");
-    }
-
-    private String recipientName(Wallet wallet) {
-        Customer recipient = wallet.getCustomerEntity();
-        String name = ((recipient.getFirstName() == null ? "" : recipient.getFirstName()) + " "
-                + (recipient.getLastName() == null ? "" : recipient.getLastName())).strip();
-        return name.isBlank() ? "Nuru Wallet customer" : name;
     }
 
     private String formatAmount(BigDecimal amount) {

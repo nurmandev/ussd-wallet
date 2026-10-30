@@ -16,6 +16,7 @@ import com.nurudeen.ussd_wallet.wallet.repository.WalletBalanceRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferEntryRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferRepository;
+import java.time.Clock;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
@@ -40,6 +41,11 @@ public class WalletTransferService {
     private final PinVerificationService pinVerificationService;
     private final EntityManager entityManager;
     private final TransferProperties transferProperties;
+    private final TransferLimitProperties transferLimitProperties;
+    private final TransferLimitService transferLimitService;
+    private final WalletTransferAuditService auditService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final Clock clock;
 
     public WalletTransferService(
             WalletRepository walletRepository,
@@ -48,7 +54,12 @@ public class WalletTransferService {
             WalletTransferEntryRepository entryRepository,
             PinVerificationService pinVerificationService,
             EntityManager entityManager,
-            TransferProperties transferProperties) {
+            TransferProperties transferProperties,
+            TransferLimitProperties transferLimitProperties,
+            TransferLimitService transferLimitService,
+            WalletTransferAuditService auditService,
+            org.springframework.context.ApplicationEventPublisher eventPublisher,
+            Clock clock) {
         this.walletRepository = walletRepository;
         this.balanceRepository = balanceRepository;
         this.transferRepository = transferRepository;
@@ -56,10 +67,26 @@ public class WalletTransferService {
         this.pinVerificationService = pinVerificationService;
         this.entityManager = entityManager;
         this.transferProperties = transferProperties;
+        this.transferLimitProperties = transferLimitProperties;
+        this.transferLimitService = transferLimitService;
+        this.auditService = auditService;
+        this.eventPublisher = eventPublisher;
+        this.clock = clock;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public WalletTransferResponse transfer(UUID customerId, WalletTransferRequest request) {
+        return transfer(customerId, request, BigDecimal.ZERO.setScale(2), null, TransferChannel.REST, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public WalletTransferResponse transfer(
+            UUID customerId,
+            WalletTransferRequest request,
+            BigDecimal fee,
+            String description,
+            TransferChannel channel,
+            String correlationId) {
         Wallet sender = walletRepository.findWalletForTransfer(customerId)
                 .orElseThrow(WalletNotFoundException::new);
         Wallet recipient = walletRepository.findByWalletNumber(request.recipientWalletNumber())
@@ -67,9 +94,14 @@ public class WalletTransferService {
         validateWallets(sender, recipient);
 
         BigDecimal amount = request.amount().setScale(2, RoundingMode.UNNECESSARY);
+        BigDecimal normalizedFee = fee.setScale(2, RoundingMode.UNNECESSARY);
         if (amount.compareTo(transferProperties.minimumAmount()) < 0
                 || amount.compareTo(transferProperties.maximumAmount()) > 0) {
             throw new WalletTransferConflictException("Transfer amount is outside the permitted limits");
+        }
+        if (normalizedFee.signum() != 0
+                || normalizedFee.compareTo(transferLimitProperties.fee()) != 0) {
+            throw new WalletTransferConflictException("Non-zero internal transfer fees are not enabled");
         }
         pinVerificationService.verify(customerId, request.pin());
 
@@ -99,6 +131,8 @@ public class WalletTransferService {
             WalletTransfer prior = existingTransfer.get();
             if (!prior.getRecipientWalletId().equals(lockedRecipient.getId())
                     || prior.getAmount().compareTo(amount) != 0
+                    || prior.getFee().compareTo(normalizedFee) != 0
+                    || !java.util.Objects.equals(prior.getDescription(), description)
                     || !prior.getCurrency().equals(lockedSender.getCurrency())) {
                 throw new WalletTransferConflictException(
                         "Idempotency key was already used for a different transfer");
@@ -114,7 +148,9 @@ public class WalletTransferService {
         if (senderBalance == null || recipientBalance == null) {
             throw new IllegalStateException("A wallet balance record is missing");
         }
-        if (senderBalance.getAvailableBalance().compareTo(amount) < 0) {
+        transferLimitService.validateDailyLimit(lockedSender.getId(), amount, clock.instant());
+        BigDecimal totalDebit = amount.add(normalizedFee);
+        if (senderBalance.getAvailableBalance().compareTo(totalDebit) < 0) {
             throw new InsufficientWalletFundsException();
         }
 
@@ -125,9 +161,11 @@ public class WalletTransferService {
                 lockedRecipient.getId(),
                 request.idempotencyKey(),
                 amount,
-                lockedSender.getCurrency()));
+                normalizedFee,
+                lockedSender.getCurrency(),
+                description));
 
-        senderBalance.debit(amount);
+        senderBalance.debit(totalDebit);
         recipientBalance.credit(amount);
         entryRepository.saveAll(List.of(
                 new WalletTransferEntry(
@@ -138,6 +176,17 @@ public class WalletTransferService {
                         lockedSender.getCurrency())));
         entryRepository.flush();
 
+        auditService.record(
+                transfer,
+                customerId,
+                channel,
+                correlationId);
+        eventPublisher.publishEvent(new WalletTransferCompletedEvent(
+                transfer.getReference(),
+                lockedSender.getWalletNumber(),
+                lockedRecipient.getWalletNumber(),
+                amount,
+                lockedSender.getCurrency()));
         return response(transfer, lockedRecipient);
     }
 
@@ -163,5 +212,10 @@ public class WalletTransferService {
                 transfer.getAmount(),
                 transfer.getCurrency(),
                 transfer.getCreatedAt());
+    }
+
+    public enum TransferChannel {
+        REST,
+        USSD
     }
 }
