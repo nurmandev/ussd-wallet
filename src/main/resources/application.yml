@@ -19,6 +19,8 @@ spring:
     enabled: true
 
 wallet:
+  balance:
+    max-requests-per-minute: ${WALLET_BALANCE_MAX_REQUESTS_PER_MINUTE:30}
   number:
     prefix: ${WALLET_NUMBER_PREFIX:10}
     length: ${WALLET_NUMBER_LENGTH:10}

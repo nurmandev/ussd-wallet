@@ -65,6 +65,10 @@ public class WalletBalance {
         return walletId;
     }
 
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
     public void debit(BigDecimal amount) {
         if (amount.signum() <= 0 || availableBalance.compareTo(amount) < 0) {
             throw new IllegalStateException("Wallet debit violates the available-balance invariant");

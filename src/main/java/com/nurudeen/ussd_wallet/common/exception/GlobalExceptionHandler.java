@@ -2,6 +2,8 @@ package com.nurudeen.ussd_wallet.common.exception;
 
 import com.nurudeen.ussd_wallet.common.response.ApiResponse;
 import com.nurudeen.ussd_wallet.ussd.service.UssdGatewayAuthenticationService;
+import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceRateLimitExceededException;
+import com.nurudeen.ussd_wallet.wallet.service.WalletUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -35,6 +37,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(WalletNotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleWalletNotFound(WalletNotFoundException exception) {
         return response(HttpStatus.NOT_FOUND, exception.getMessage());
+    }
+
+    @ExceptionHandler(WalletUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleWalletUnavailable(WalletUnavailableException exception) {
+        return response(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(WalletBalanceRateLimitExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleBalanceRateLimit(
+            WalletBalanceRateLimitExceededException exception) {
+        return response(HttpStatus.TOO_MANY_REQUESTS, exception.getMessage());
     }
 
     @ExceptionHandler(InsufficientWalletFundsException.class)

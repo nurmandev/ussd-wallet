@@ -25,9 +25,10 @@ import com.nurudeen.ussd_wallet.ussd.session.UssdSessionEventRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionStatus;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
+import com.nurudeen.ussd_wallet.wallet.dto.WalletBalanceResponse;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferEntryRepository;
-import com.nurudeen.ussd_wallet.wallet.service.WalletQueryService;
+import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceService;
 import com.nurudeen.ussd_wallet.wallet.service.WalletTransferService;
 import java.time.Clock;
 import java.time.Instant;
@@ -50,6 +51,7 @@ class UssdSessionServiceTests {
     private final CustomerRepository customerRepository = mock(CustomerRepository.class);
     private final CustomerSecurityRepository securityRepository = mock(CustomerSecurityRepository.class);
     private final WalletRepository walletRepository = mock(WalletRepository.class);
+    private final WalletBalanceService walletBalanceService = mock(WalletBalanceService.class);
     private final PhoneNumberNormalizer phoneNumberNormalizer = mock(PhoneNumberNormalizer.class);
     private final Customer customer = customer();
     private final Wallet wallet = wallet();
@@ -82,6 +84,19 @@ class UssdSessionServiceTests {
         when(securityRepository.findById(customerId)).thenReturn(Optional.of(security));
         when(walletRepository.findByWalletNumber(anyString())).thenReturn(Optional.of(wallet));
         when(phoneNumberNormalizer.normalize(anyString())).thenReturn(phoneNumber);
+        when(walletBalanceService.getCustomerBalance(
+                        customerId,
+                        WalletBalanceService.Channel.USSD,
+                        "session-1",
+                        "cb-balance"))
+                .thenReturn(new WalletBalanceResponse(
+                        wallet.getWalletNumber(),
+                        "NGN",
+                        new java.math.BigDecimal("45500.00"),
+                        new java.math.BigDecimal("40500.00"),
+                        new java.math.BigDecimal("5000.00"),
+                        com.nurudeen.ussd_wallet.wallet.enums.WalletStatus.ACTIVE,
+                        NOW));
 
         service = new UssdSessionService(
                 sessionRepository,
@@ -90,7 +105,7 @@ class UssdSessionServiceTests {
                 customerRepository,
                 securityRepository,
                 walletRepository,
-                mock(WalletQueryService.class),
+                walletBalanceService,
                 mock(WalletTransferService.class),
                 mock(WalletTransferEntryRepository.class),
                 mock(TransactionPinManagementService.class),
@@ -114,6 +129,24 @@ class UssdSessionServiceTests {
         assertEquals("Enter recipient wallet number:", transfer.message());
         assertEquals("TRANSFER_RECIPIENT", session.getCurrentStep());
         assertEquals("MTN", session.getNetworkCode());
+    }
+
+    @Test
+    void balanceMenuShowsLatestAmountsAndDoesNotRequirePinVerification() {
+        when(securityRepository.findById(customerId)).thenReturn(Optional.empty());
+
+        service.process(request("", "cb-start"));
+        UssdResponse response = service.process(request("1", "cb-balance"));
+
+        assertEquals(UssdResponse.Type.CONTINUE, response.type());
+        org.junit.jupiter.api.Assertions.assertTrue(response.message().contains("Avail NGN 40,500.00"));
+        org.junit.jupiter.api.Assertions.assertTrue(response.message().contains("Ledger NGN 45,500.00"));
+        org.junit.jupiter.api.Assertions.assertTrue(response.message().contains("Pending NGN 5,000.00"));
+        assertEquals("BALANCE_MENU", session.getCurrentStep());
+        org.mockito.Mockito.verify(securityRepository, org.mockito.Mockito.never())
+                .findById(customerId);
+        org.mockito.Mockito.verify(walletBalanceService).getCustomerBalance(
+                customerId, WalletBalanceService.Channel.USSD, "session-1", "cb-balance");
     }
 
     private UssdGatewayRequest request(String text, String callbackId) {

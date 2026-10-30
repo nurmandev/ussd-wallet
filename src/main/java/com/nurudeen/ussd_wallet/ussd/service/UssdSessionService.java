@@ -29,12 +29,14 @@ import com.nurudeen.ussd_wallet.ussd.session.UssdSessionRepository;
 import com.nurudeen.ussd_wallet.ussd.session.UssdSessionStatus;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferRequest;
 import com.nurudeen.ussd_wallet.wallet.dto.WalletTransferResponse;
-import com.nurudeen.ussd_wallet.wallet.dto.WalletResponse;
+import com.nurudeen.ussd_wallet.wallet.dto.WalletBalanceResponse;
 import com.nurudeen.ussd_wallet.wallet.entity.Wallet;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletRepository;
 import com.nurudeen.ussd_wallet.wallet.repository.WalletTransferEntryRepository;
-import com.nurudeen.ussd_wallet.wallet.service.WalletQueryService;
+import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceRateLimitExceededException;
+import com.nurudeen.ussd_wallet.wallet.service.WalletBalanceService;
 import com.nurudeen.ussd_wallet.wallet.service.WalletTransferService;
+import com.nurudeen.ussd_wallet.wallet.service.WalletUnavailableException;
 import org.springframework.data.domain.PageRequest;
 import java.math.BigDecimal;
 import java.text.NumberFormat;
@@ -57,7 +59,7 @@ public class UssdSessionService {
     private final CustomerRepository customerRepository;
     private final CustomerSecurityRepository securityRepository;
     private final WalletRepository walletRepository;
-    private final WalletQueryService walletQueryService;
+    private final WalletBalanceService walletBalanceService;
     private final WalletTransferService transferService;
     private final WalletTransferEntryRepository transferEntryRepository;
     private final TransactionPinManagementService pinManagementService;
@@ -74,7 +76,7 @@ public class UssdSessionService {
             CustomerRepository customerRepository,
             CustomerSecurityRepository securityRepository,
             WalletRepository walletRepository,
-            WalletQueryService walletQueryService,
+            WalletBalanceService walletBalanceService,
             WalletTransferService transferService,
             WalletTransferEntryRepository transferEntryRepository,
             TransactionPinManagementService pinManagementService,
@@ -89,7 +91,7 @@ public class UssdSessionService {
         this.customerRepository = customerRepository;
         this.securityRepository = securityRepository;
         this.walletRepository = walletRepository;
-        this.walletQueryService = walletQueryService;
+        this.walletBalanceService = walletBalanceService;
         this.transferService = transferService;
         this.transferEntryRepository = transferEntryRepository;
         this.pinManagementService = pinManagementService;
@@ -188,7 +190,7 @@ public class UssdSessionService {
         }
         UssdResponse response;
         try {
-            response = runStep(session, customer, input, now);
+            response = runStep(session, customer, input, now, request.callbackId());
         } catch (InvalidTransactionPinException exception) {
             response = continueWith("Invalid PIN. Try again or dial 99 to exit.");
         } catch (PinVerificationLockedException exception) {
@@ -202,6 +204,12 @@ public class UssdSessionService {
             close(session, "PIN_NOT_CONFIGURED", UssdSessionStatus.FAILED, now);
         } catch (WalletNotFoundException exception) {
             response = continueWith("Wallet not found. Check the wallet number.");
+        } catch (WalletUnavailableException exception) {
+            response = end("Your wallet is currently unavailable. Contact support.");
+            close(session, "BALANCE_UNAVAILABLE", UssdSessionStatus.FAILED, now);
+        } catch (WalletBalanceRateLimitExceededException exception) {
+            response = end("Too many balance enquiries. Please try again later.");
+            close(session, "BALANCE_RATE_LIMITED", UssdSessionStatus.FAILED, now);
         } catch (WalletTransferConflictException exception) {
             response = end("Transfer could not be completed. Please review the details.");
             close(session, "TRANSFER_REJECTED", UssdSessionStatus.FAILED, now);
@@ -225,7 +233,8 @@ public class UssdSessionService {
         return response;
     }
 
-    private UssdResponse runStep(UssdSession session, Customer customer, String input, Instant now) {
+    private UssdResponse runStep(
+            UssdSession session, Customer customer, String input, Instant now, String correlationId) {
         String step = session.getCurrentStep();
         if (input.equalsIgnoreCase("CANCEL")) {
             clearSessionData(session);
@@ -255,7 +264,7 @@ public class UssdSessionService {
         return switch (step) {
             case "UNREGISTERED" -> unregistered(session, input, now);
             case "PIN_SETUP" -> setupPin(session, customer, input, now);
-            case "MAIN" -> mainSelection(session, customer, input, now);
+            case "MAIN" -> mainSelection(session, customer, input, now, correlationId);
             case "TRANSFER_RECIPIENT" -> transferRecipient(session, customer, input, now);
             case "TRANSFER_AMOUNT" -> transferAmount(session, input, now);
             case "TRANSFER_CONFIRM" -> confirmTransfer(session, input, now);
@@ -263,6 +272,7 @@ public class UssdSessionService {
             case "PIN_CHANGE" -> changePin(session, customer, input, now);
             case "HISTORY_CHOICE" -> historyChoice(session, customer, input, now);
             case "HISTORY_MORE" -> historyMore(session, customer, input, now);
+            case "BALANCE_MENU" -> balanceSelection(session, customer, input, now);
             case "HELP" -> helpSelection(session, input, now);
             default -> {
                 clearSessionData(session);
@@ -293,27 +303,26 @@ public class UssdSessionService {
             transition(session, MAIN_MENU, "MAIN", UssdSessionStatus.WAITING_FOR_INPUT, now);
             return continueWith("Wallet access is restricted.\n6. My Account\n7. Help\n8. Exit");
         }
-        CustomerSecurity security = securityRepository.findById(customer.getId()).orElse(null);
-        boolean pinConfigured = security != null && security.isPinConfigured();
-        if (!pinConfigured) {
-            transition(session, MAIN_MENU, "PIN_SETUP", UssdSessionStatus.WAITING_FOR_INPUT, now);
-            return continueWith("Welcome to Nuru Wallet\nPIN setup required.\nEnter PIN*confirmation:");
-        }
         transition(session, MAIN_MENU, "MAIN", UssdSessionStatus.WAITING_FOR_INPUT, now);
         return continueWith("Welcome to Nuru Wallet\n1. Check Balance\n2. Send Money\n"
                 + "3. Buy Airtime\n4. Transaction History\n5. Change PIN\n"
                 + "6. My Account\n7. Help\n8. Exit");
     }
 
-    private UssdResponse mainSelection(UssdSession session, Customer customer, String input, Instant now) {
+    private UssdResponse mainSelection(
+            UssdSession session, Customer customer, String input, Instant now, String correlationId) {
         if (customer == null) {
             return showMain(session, null, now);
         }
         return switch (input) {
-            case "1" -> balance(customer);
+            case "1" -> balance(session, customer, now, correlationId);
             case "2" -> {
                 if (!customer.getStatus().isFinanciallyActive()) {
                     yield continueWith("Your account is not active for transfers.");
+                }
+                if (!hasConfiguredPin(customer)) {
+                    transition(session, "PIN_SETUP", "PIN_SETUP", UssdSessionStatus.WAITING_FOR_INPUT, now);
+                    yield continueWith("PIN setup required. Enter PIN*confirmation:");
                 }
                 transition(session, "TRANSFER", "TRANSFER_RECIPIENT", UssdSessionStatus.WAITING_FOR_INPUT, now);
                 session.getSessionData().clear();
@@ -326,6 +335,10 @@ public class UssdSessionService {
                 yield continueWith("Transaction History\n1. Last transaction\n2. Last 5 transactions\n0. Back");
             }
             case "5" -> {
+                if (!hasConfiguredPin(customer)) {
+                    transition(session, "PIN_SETUP", "PIN_SETUP", UssdSessionStatus.WAITING_FOR_INPUT, now);
+                    yield continueWith("PIN setup required. Enter PIN*confirmation:");
+                }
                 transition(session, "PIN_CHANGE", "PIN_CHANGE", UssdSessionStatus.WAITING_FOR_INPUT, now);
                 yield continueWith("Enter current PIN*new PIN*confirm PIN:");
             }
@@ -503,13 +516,36 @@ public class UssdSessionService {
         return continueWith(message);
     }
 
-    private UssdResponse balance(Customer customer) {
-        WalletResponse wallet = walletQueryService.getForCustomer(customer.getId());
-        if (wallet.balance() == null) {
-            return end("Wallet balance is currently unavailable.");
+    private UssdResponse balance(
+            UssdSession session, Customer customer, Instant now, String correlationId) {
+        WalletBalanceResponse balance = walletBalanceService.getCustomerBalance(
+                customer.getId(),
+                WalletBalanceService.Channel.USSD,
+                session.getSessionId(),
+                correlationId);
+        transition(session, "BALANCE", "BALANCE_MENU", UssdSessionStatus.WAITING_FOR_INPUT, now);
+        return continueWith("Wallet " + balance.walletNumber() + " " + balance.walletStatus()
+                + "\nAvail " + balance.currency() + " " + formatAmount(balance.availableBalance())
+                + "\nLedger " + balance.currency() + " " + formatAmount(balance.ledgerBalance())
+                + "\nPending " + balance.currency() + " " + formatAmount(balance.pendingAmount())
+                + "\n1 Main  2 Exit");
+    }
+
+    private UssdResponse balanceSelection(
+            UssdSession session, Customer customer, String input, Instant now) {
+        if (input.equals("1") || input.equals("0") || input.equals("00")) {
+            return showMain(session, customer, now);
         }
-        return end("Your Wallet Balance:\n" + wallet.currency() + " "
-                + formatAmount(wallet.balance().availableBalance()));
+        if (input.equals("2") || input.equals("8") || input.equals("99")) {
+            close(session, "SESSION_COMPLETED", UssdSessionStatus.COMPLETED, now);
+            return end("Thank you for using Nuru Wallet.");
+        }
+        return continueWith("Enter 1 for main menu or 2 to exit.");
+    }
+
+    private boolean hasConfiguredPin(Customer customer) {
+        CustomerSecurity security = securityRepository.findById(customer.getId()).orElse(null);
+        return security != null && security.isPinConfigured();
     }
 
     private UssdResponse account(Customer customer) {

@@ -93,6 +93,7 @@ Optional wallet and registration settings:
 | `WALLET_NUMBER_LENGTH` | `10` | Total wallet number length, including prefix. |
 | `WALLET_NUMBER_MAX_RETRIES` | `5` | Maximum candidate attempts when a number already exists or a database uniqueness collision occurs. |
 | `WALLET_CURRENCY` | `NGN` | Three-letter wallet currency. |
+| `WALLET_BALANCE_MAX_REQUESTS_PER_MINUTE` | `30` | Maximum balance enquiries per customer across REST and USSD during a rolling one-minute window. |
 | `REGISTRATION_RATE_LIMIT_MAX_REQUESTS` | `10` | Registration requests allowed per client address per window. |
 | `REGISTRATION_RATE_LIMIT_WINDOW_SECONDS` | `60` | In-memory rate-limit window. |
 | `PIN_PEPPER` | Required | Secret key used to HMAC the PIN before Argon2id hashing; at least 32 characters. |
@@ -343,6 +344,71 @@ Successful response (`200 OK`):
   }
 }
 ```
+
+## Wallet balance enquiry
+
+`GET /api/v1/wallet/balance` retrieves the authenticated customer's balance.
+The customer identity comes only from the trusted `CustomerPrincipal`; the
+request cannot supply a wallet/customer ID. The endpoint returns the
+`ApiResponse` envelope and includes the wallet number, currency, ledger and
+available balances, amount reserved for pending operations, wallet status,
+and balance projection update time.
+
+The wallet's `wallet_balances` row is the authoritative projection maintained
+atomically by the existing transfer service. Completed transfers immediately
+change the ledger and available balances. Pending balance is the existing
+`reserved_balance`: it is already excluded from `available_balance`, so the
+enquiry does not subtract it again. The current application only posts
+internal transfers synchronously and does not have an asynchronous transaction
+status or separate pending-transaction table; pending deposits/withdrawals and
+provider transactions are therefore not included until those workflows exist.
+
+The request is rate-limited per customer across both channels using a
+PostgreSQL-backed one-minute counter, so opening new USSD sessions does not
+bypass the customer limit. Successful, unavailable, missing-wallet, and
+rate-limited enquiries are recorded in `wallet_balance_enquiry_audit` without
+recording PINs, tokens, or the balance amounts. A frozen/closed wallet or a
+customer that is not financially active cannot read the balance.
+
+Example request (requires an authentication mechanism that supplies the
+trusted customer principal):
+
+```sh
+curl http://localhost:8080/api/v1/wallet/balance \
+  -H 'X-Correlation-ID: balance-request-1' \
+  -H 'Authorization: <authenticated customer credentials>'
+```
+
+Successful response:
+
+```json
+{
+  "success": true,
+  "message": "Balance retrieved successfully",
+  "data": {
+    "walletNumber": "1028347195",
+    "currency": "NGN",
+    "ledgerBalance": 45500.00,
+    "availableBalance": 40500.00,
+    "pendingAmount": 5000.00,
+    "walletStatus": "ACTIVE",
+    "lastUpdated": "2026-10-30T12:00:00Z"
+  }
+}
+```
+
+Balance enquiries do not ask for or verify the transaction PIN. The USSD
+gateway path uses the HMAC-authenticated gateway callback, matches its
+normalized phone number to the registered customer, and checks the active
+session before retrieving the latest balance. The response includes available,
+ledger, and pending amounts and offers return-to-menu/exit choices. Duplicate
+gateway callbacks continue to receive the original persisted response.
+
+The current deployment still has no customer credential/token issuance
+provider. Consequently the REST endpoint accepts only a future trusted
+`CustomerPrincipal` and will not treat an arbitrary phone number or customer
+ID as proof of identity. Integrate customer authentication before enabling
+customer REST access in production.
 
 ## USSD gateway and session engine
 
