@@ -1,4 +1,4 @@
-# USSD Wallet Registration Backend
+# USSD Wallet Backend
 
 This Java 21 / Spring Boot 3.5 application implements customer registration,
 wallet creation, transaction PIN security, and PIN-authorized wallet transfers
@@ -293,6 +293,51 @@ Use these steps:
    one of the transaction's wallet owners.
 6. `DELETE /api/v1/transfers/intents/{intentId}` cancels an uncompleted intent.
 
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/wallet/lookup/{walletNumber}` | Check recipient eligibility and retrieve limited recipient details. |
+| `POST` | `/api/v1/transfers/validate` | Validate a transfer and create a confirmation intent. |
+| `POST` | `/api/v1/transfers/confirm` | Verify the transaction PIN and execute the intent. |
+| `DELETE` | `/api/v1/transfers/intents/{intentId}` | Cancel a pending intent. |
+| `GET` | `/api/v1/transfers/history?page=0&size=20` | List completed transfers sent or received by the customer. |
+| `GET` | `/api/v1/transfers/{reference}` | Retrieve a transfer receipt. |
+| `GET` | `/api/v1/transfers/{reference}/receipt` | Retrieve the same transfer receipt explicitly. |
+
+Example validation request:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/transfers/validate \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: <authenticated customer credentials>' \
+  -d '{
+    "recipientWalletNumber": "1098765432",
+    "amount": 5000.00,
+    "description": "Personal transfer",
+    "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
+  }'
+```
+
+The response is wrapped in the standard `success`, `message`, and `data`
+envelope. Keep the returned `transferIntentId`, review the masked recipient
+name and total debit with the customer, then submit the intent ID, transaction
+PIN, and the same idempotency key:
+
+```sh
+curl -X POST http://localhost:8080/api/v1/transfers/confirm \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: <authenticated customer credentials>' \
+  -d '{
+    "transferIntentId": "<transfer intent UUID>",
+    "transactionPin": "4829",
+    "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
+  }'
+```
+
+Treat the PIN as sensitive input: send it only over TLS and never log or
+persist it. A completed confirmation retry returns the original transfer
+result. Reusing an idempotency key with different intent details is rejected.
+Recipient lookup is rate-limited to 30 requests per customer per minute.
+
 The request cannot set a sender ID, fee, total debit, status, or balance.
 Transfer fees default to zero; nonzero fees are rejected until a fee/revenue
 ledger posting path is available. The limit examples are configurable
@@ -325,16 +370,6 @@ Example intent request:
   "recipientWalletNumber": "1098765432",
   "amount": 5000.00,
   "description": "Personal transfer",
-  "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
-}
-```
-
-Confirmation request:
-
-```json
-{
-  "transferIntentId": "16f11902-0e61-46d4-b89e-5a0fc0a3fe82",
-  "transactionPin": "4829",
   "idempotencyKey": "90e6bf9e-4e5e-47a8-88e8-c5e53c7a6ebc"
 }
 ```
