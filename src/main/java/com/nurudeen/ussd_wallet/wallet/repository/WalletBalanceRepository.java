@@ -10,7 +10,13 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Optional;
+
 public interface WalletBalanceRepository extends JpaRepository<WalletBalance, UUID> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select balance from WalletBalance balance where balance.walletId = :walletId")
+    Optional<WalletBalance> findByWalletIdForUpdate(@Param("walletId") UUID walletId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select balance from WalletBalance balance where balance.walletId in :walletIds order by balance.walletId")
