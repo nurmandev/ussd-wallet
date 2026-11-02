@@ -36,8 +36,11 @@ public class SecurityConfig {
                                 "/api/v1/ussd/simulator/**",
                                 "/actuator/health",
                                 "/actuator/health/**",
+                                "/swagger-ui",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
+                                "/webjars/**",
+                                "/v3/api-docs",
                                 "/v3/api-docs/**")
                         .permitAll()
                         .anyRequest()

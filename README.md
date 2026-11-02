@@ -171,6 +171,10 @@ and `data` envelope and do not expose credentials or database errors.
 
 Springdoc API documentation is available at
 `http://localhost:8080/swagger-ui/index.html`.
+The Swagger UI and OpenAPI specification are publicly accessible. API
+operations shown in the UI remain protected by the application's normal
+authentication rules; making the documentation public does not make wallet
+or transfer endpoints public.
 
 ## Database records and atomicity
 
